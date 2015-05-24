@@ -17,6 +17,8 @@
 open Lwt
 open Cmdliner
 
+type manager = Xapi | Libv
+
 let info =
   let doc =
     "Just-In-Time Summoning of Unikernels. Jitsu is a forwarding DNS server \
@@ -50,9 +52,18 @@ let bindport =
   let doc = "UDP port to listen for DNS queries" in
   Arg.(value & opt int 53 & info ["l"; "listen"] ~docv:"PORT" ~doc)
 
+let toolstack =
+  let doc =
+    "Toolstack to use to manage VMSs (xapi or libvirt). \
+     libvirt is the default. "
+  in
+  Arg.(value & opt string "libvirt" & info ["tool"] ~docv:"TOOL" ~doc)
+
 let connstr =
   let doc =
-    "libvirt connection string (e.g. xen+ssh://x.x.x.x/system or vbox:///session)"
+    "libvirt connection string (e.g. xen+ssh://x.x.x.x/system or vbox:///session) \
+     or \
+     xapi rpc credentials in the form of x.x.x.x:password. "
   in
   Arg.(value & opt string "xen:///" & info ["c"; "connect"] ~docv:"CONNECT" ~doc)
 
@@ -122,7 +133,7 @@ let or_warn msg f =
   try f () with
   | Failure m -> (log (Printf.sprintf "Warning: %s\nReceived exception: %s" msg m)); ()
 
-let jitsu connstr bindaddr bindport forwarder forwardport response_delay 
+let jitsu toolstack connstr bindaddr bindport forwarder forwardport response_delay 
     map_domain ttl vm_stop_mode use_synjitsu =
   let rec maintenance_thread t timeout =
     Lwt_unix.sleep timeout >>= fun () ->
@@ -142,8 +153,12 @@ let jitsu connstr bindaddr bindport forwarder forwardport response_delay
                 Lwt.return (Some r)
       )
      >>= fun forward_resolver ->
+     let mgr = match toolstack with
+       | "xapi" -> Xen_api
+       | "lobvirt" -> Libv
+     in
      log (Printf.sprintf "Connecting to %s...\n" connstr);
-     let t = or_abort (fun () -> Jitsu.create log connstr forward_resolver ~use_synjitsu ()) in
+     let t = or_abort (fun () -> Jitsu.create mgr log connstr forward_resolver ~use_synjitsu ()) in
      Lwt.choose [(
          (* main thread, DNS server *)
          let triple (dns,ip,name) =
@@ -162,7 +177,7 @@ let jitsu connstr bindaddr bindport forwarder forwardport response_delay
   )
 
 let jitsu_t =
-  Term.(pure jitsu $ connstr $ bindaddr $ bindport $ forwarder $ forwardport
+  Term.(pure jitsu $ toolstack $ connstr $ bindaddr $ bindport $ forwarder $ forwardport
         $ response_delay $ map_domain $ ttl $ vm_stop_mode $ synjitsu_domain_uuid )
 
 let () =

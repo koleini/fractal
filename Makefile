@@ -1,4 +1,4 @@
-PACKAGES=-package lwt.syntax,lwt,dns.lwt,libvirt,cmdliner,ezxmlm,ipaddr,str,conduit,conduit.lwt-unix
+PACKAGES=-package lwt.syntax,lwt,dns.lwt,libvirt,cmdliner,ezxmlm,ipaddr,str,conduit,conduit.lwt-unix,xen-api-client
 INCLUDE=
 OPT=-linkpkg -g 
 OCAMLOPT=ocamlopt -w A-4-44

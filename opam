@@ -11,7 +11,8 @@ depends: [  "lwt"
             "ipaddr"
             "ezxmlm" 
             "conduit"
-            "vchan" ]
+            "vchan"
+            "xen-api-client" ]
 depexts: [
   [["debian"] ["libvirt-bin" "libvirt-dev"]]
   [["ubuntu"] ["libvirt-bin" "libvirt-dev"]]

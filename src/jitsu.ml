@@ -17,8 +17,20 @@
 open Lwt
 open Dns
 open Libvirt
+open Xen_api
+open Xen_api_lwt_unix
+
+let json = ref false
 
 type vm_stop_mode = VmStopDestroy | VmStopSuspend | VmStopShutdown
+
+type manager = Xapi | Libv
+
+type xen_api = {rpc : Rpc.call -> Rpc.response Lwt.t; session_id : string;}
+
+type conn =
+  | Lconn of rw Libvirt.Connect.t
+  | Xconn of xen_api
 
 type vm_metadata = {
   vm_name : string;             (* Unique name of VM. Matches name in libvirt *)
@@ -41,7 +53,7 @@ type vm_metadata = {
 type t = {
   db : Loader.db;                         (* DNS database *)
   log : string -> unit;                   (* Log function *) 
-  connection : rw Libvirt.Connect.t;      (* connection to libvirt *)
+  connection : conn;                      (* connection to vm manager *)
   forward_resolver : Dns_resolver_unix.t option; (* DNS to forward request to if no
                                              local match *)
   synjitsu : Synjitsu.t option;
@@ -55,8 +67,21 @@ let try_libvirt msg f =
   try f () with
   | Libvirt.Virterror e -> raise (Failure (Printf.sprintf "%s: %s" msg (Libvirt.Virterror.to_string e)))
 
-let create log connstr forward_resolver ?vm_count:(vm_count=7) ?use_synjitsu:(use_synjitsu=None) () =
-  let connection = try_libvirt "Unable to connect" (fun () -> Libvirt.Connect.connect ~name:connstr ()) in
+let create mgr log connstr forward_resolver ?vm_count:(vm_count=7) ?use_synjitsu:(use_synjitsu=None) () =
+  lwt connection = match mgr with
+  | Libv -> return
+              (Lconn (try_libvirt "Unable to connect" (fun () -> Libvirt.Connect.connect ~name:connstr ())))
+  | Xapi -> 
+      let (uri, password) = List.split_n (String.split ~on:':' connstr) 2 in
+      let rpc = if !json then make_json !uri else make !uri in
+      lwt session_id =
+      try_lwt
+        Session.login_with_password rpc "root" password "1.0"
+      with
+      | exn -> raise (Failure (Printf.sprintf "%s" (Printexc.to_string exn)))
+      in
+        return (Xconn {rpc = rpc; session_id = session_id})
+  in
   let synjitsu = match use_synjitsu with
   | Some domain -> let t = (Synjitsu.create connection log domain "synjitsu") in
             ignore_result (Synjitsu.connect t);  (* connect in background *)
