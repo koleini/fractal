@@ -27,8 +27,9 @@ type vm_metadata = {
   vm_uuid : Libvirt.uuid option; (* Libvirt data structure for this VM *)
   vm_opaqueRef : string option;  (* Xapi reference to VM *)       
 
-  mac : Macaddr.t option;       (* MAC addr of this domain, if known. Used for gARP *)
-  ip : Ipaddr.V4.t;                (* IP addr of this domain *)
+  mac : Macaddr.t option;        (* MAC addr of this domain, if known. Used for gARP *)
+  vif_opaqueRef : string;        (* Xapi reference for vif *) (* TODO: we may have more than one vif per VM *)
+  ip : Ipaddr.V4.t;              (* IP addr of this domain *)
 
   query_response_delay : float; (* in seconds, delay after startup before
                                    sending query response *)
@@ -68,6 +69,39 @@ let exn_to_string = function
 let try_xapi msg f =
   try f () with
   | e -> raise (Failure (Printf.sprintf "%s: %s" msg (exn_to_string e)))
+
+(* define VM in xapi (eq. to define in libvirt) with a single interface *)
+let define_vm ~rpc ~session_id ~name_label ~pV_kernel =
+  lwt vm = VM.create ~rpc ~session_id
+	~name_label ~name_description:"" ~user_version:0L
+	~is_a_template:false
+	~affinity:"OpaqueRef:NULL"
+	~memory_target:0L
+	~memory_static_max:268435456L ~memory_dynamic_max:268435456L
+	~memory_dynamic_min:134217728L ~memory_static_min:134217728L
+	~vCPUs_params:[] ~vCPUs_max:1L ~vCPUs_at_startup:1L
+	~actions_after_shutdown:`destroy ~actions_after_reboot:`restart ~actions_after_crash:`restart
+	~pV_bootloader:"" ~pV_kernel ~pV_ramdisk:"" ~pV_args:""
+	~pV_bootloader_args:"" ~pV_legacy_args:""
+	~hVM_boot_policy:"" ~hVM_boot_params:[] ~hVM_shadow_multiplier:1.0
+	~platform:[]
+	~pCI_bus:""
+	~other_config:[("vgpu_pci", ""); ("mac_seed", "c8b61c6d-8bc6-3365-ea27-507a3166bb33")] (* TODO: require seed? *)
+	~recommendations:""
+	~xenstore_data:[("vm-data", "")]
+	~ha_always_run:false ~ha_restart_priority:""
+	~tags:[]
+	~blocked_operations:[]
+	~protection_policy:"OpaqueRef:NULL"
+	~is_snapshot_from_vmpp:false
+	~appliance:"OpaqueRef:NULL"
+	~start_delay:0L ~shutdown_delay:0L ~order:0L ~suspend_SR:"OpaqueRef:NULL" ~version:0L in
+  lwt net = Network.get_by_name_label rpc session_id "Pool-wide network associated with eth0" in
+  lwt vif = VIF.create ~rpc:rpc ~session_id:session_id
+    ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC:"" (* "6a:d2:12:b8:96:00" *) ~mTU:0L (* TODO: create a random mac? *)
+	~other_config:[] ~qos_algorithm_type:"" ~qos_algorithm_params:[]  ~locking_mode:`network_default
+	~ipv4_allowed:[] ~ipv6_allowed:[] in
+  return (vm, vif)
 
 let create toolstack log connstr forward_resolver ?vm_count:(vm_count=7) ?use_synjitsu:(use_synjitsu=None) () =
   lwt connection = match toolstack with
@@ -340,28 +374,41 @@ let get_base_domain domain =
 
 (* get mac address for domain - TODO only supports one interface *)
 let get_mac domain =
-  let dom_xml_s = try_libvirt "Unable to retrieve XML description of domain" (fun () -> Libvirt.Domain.get_xml_desc domain) in
-  (*Printf.printf "xml is %s" dom_xml_s;*)
-  try
+  let dom_xml_s =
+    try_libvirt "Unable to retrieve XML description of domain"
+      (fun () -> Libvirt.Domain.get_xml_desc domain) in
+    (* Printf.printf "xml is %s" dom_xml_s;*)
+    try
       let (_, dom_xml) = Ezxmlm.from_string dom_xml_s in
-      let (mac_attr, _) = Ezxmlm.member "domain" dom_xml |> Ezxmlm.member "devices" |> Ezxmlm.member "interface" |> Ezxmlm.member_with_attr "mac" in
+      let (mac_attr, _) = Ezxmlm.member "domain" dom_xml |> Ezxmlm.member "devices" 
+                            |> Ezxmlm.member "interface" |> Ezxmlm.member_with_attr "mac" in
       let mac_s = Ezxmlm.get_attr "address" mac_attr in
       Macaddr.of_string mac_s
-  with
-  | Not_found -> None
-  | Ezxmlm.Tag_not_found _ -> None
+    with
+    | Not_found -> None
+    | Ezxmlm.Tag_not_found _ -> None
+
+let get_vif_mac (rpc, session_id) vif =
+  try_xapi "Unable to get MAC address" (fun () ->
+    VIF.get_MAC ~rpc:rpc ~session_id:session_id ~self:vif
+  )
 
 (* add vm to be monitored by jitsu *)
-let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode
-    ~delay:response_delay ~ttl =
+let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode ~delay:response_delay ~ttl =
   (* check if vm_name exists and set up VM record *)
-  let vm_dom = match t.connection with
+  lwt (vm_uuid, vm_opaqueRef, vif_opaqueRef, mac) =
+  match t.connection with
     | Lconn c ->
-        try_libvirt "Unable to lookup VM by name" (fun () -> Libvirt.Domain.lookup_by_name c vm_name)
-    | _ -> raise (Failure "jitsu: xapi not added yet")
+        let vm_dom = try_libvirt "Unable to lookup VM by name"
+                       (fun () -> Libvirt.Domain.lookup_by_name c vm_name) in
+        let uuid = try_libvirt (Printf.sprintf "Unable to get uuid for %s" vm_name)
+                     (fun () -> Libvirt.Domain.get_uuid vm_dom) in
+        return (Some uuid, None, "", get_mac vm_dom)
+    | Xconn c ->
+      lwt (vm, vif) = define_vm ~rpc:c.rpc ~session_id:c.session_id ~name_label:vm_name ~pV_kernel:("/boot/guest/" ^ vm_name) in
+      lwt mac_addr = get_vif_mac (c.rpc, c.session_id) vif in
+      return (None, Some vm, vif, Macaddr.of_string mac_addr)
   in
-  let vm_uuid = try_libvirt (Printf.sprintf "Unable to get uuid for %s" vm_name) (fun () -> Libvirt.Domain.get_uuid vm_dom) in
-  let mac = get_mac vm_dom in
   (match mac with
   | Some m -> t.log (Printf.sprintf "Domain registered with MAC %s\n" (Macaddr.to_string m))
   | None -> t.log (Printf.sprintf "Warning: MAC not found for domain. Synjitsu will not be notified..\n"));
@@ -382,8 +429,9 @@ let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode
   (* reuse existing record if possible *)
   let record = match existing_record with
     | None -> { vm_name;
-                vm_uuid = Some vm_uuid;
-                vm_opaqueRef = None;
+                vm_uuid;
+                vm_opaqueRef;
+                vif_opaqueRef;
                 mac;
                 ip=vm_ip;
                 how_to_stop = stop_mode;
