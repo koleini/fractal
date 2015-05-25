@@ -16,9 +16,15 @@
 
 open Lwt
 
+type xen_api = {rpc : Rpc.call -> Rpc.response Lwt.t; session_id : string;}
+
+type conn =
+  | Lconn of Libvirt.rw Libvirt.Connect.t
+  | Xconn of xen_api
+
 type t = {
     log : string -> unit;
-    backend_conn : Libvirt.rw Libvirt.Connect.t;
+    backend_conn : conn;
     synjitsu_domain : string; (* Synjitsu domain name or uuid *)
     synjitsu_port : string; (* Vchan port name to use *)
     is_connecting : bool ref;
@@ -57,12 +63,19 @@ let connect t =
             (try_lwt (disconnect t) with _ -> Lwt.return_unit) >>= fun () -> (* disconnect just in case, ignore result *)
             Lwt_unix.sleep 1.0 >>= fun () -> (* wait, just in case *)
             t.log "synjitsu: Connecting...\n";
-            let domain = (
+            let domain = 
+              match t.backend_conn with
+              | Lconn c -> try_libvirt "synjitsu: could not find domain by uuid\n"
+                             (fun () -> Libvirt.Domain.lookup_by_uuid c t.synjitsu_domain)
+              | Xconn c -> raise (Failure "synjitsu: xapi not added yet")
+            (* (
                 try
                     try_libvirt "synjitsu: could not find domain by uuid\n" (fun () -> Libvirt.Domain.lookup_by_uuid t.backend_conn t.synjitsu_domain)
                 with _ -> 
                     try_libvirt "synjitsu: could not find domain by name (or uuid)\n" (fun () -> Libvirt.Domain.lookup_by_name t.backend_conn t.synjitsu_domain)
-            ) in
+            )
+            *)
+            in
             let client = `Vchan_direct (`Domid (Libvirt.Domain.get_id domain), `Port t.synjitsu_port) in
             Conduit_lwt_unix.init () >>= fun ctx ->
             Conduit_lwt_unix.connect ~ctx client >>= fun (_, ic, oc) ->

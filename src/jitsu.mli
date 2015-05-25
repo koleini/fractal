@@ -30,9 +30,7 @@ type vm_stop_mode = VmStopDestroy | VmStopSuspend | VmStopShutdown
 type t
 (** The type of Jitsu states. *)
 
-type mgr
-
-val create: mgr -> (string -> unit) -> string -> Dns_resolver_unix.t option -> ?vm_count:int -> ?use_synjitsu:(string option) -> unit -> t
+val create: string -> (string -> unit) -> string -> Dns_resolver_unix.t option -> ?vm_count:int -> ?use_synjitsu:(string option) -> unit -> t Lwt.t
 (** [create log_function name resolver vm_count use_synjitsu] creates a new Jitsu instance, 
     where vm_count is the initial size of the hash table and use_synjitsu is the optional 
     name or uuid of a synjitsu unikernel. *)
@@ -46,6 +44,7 @@ val add_vm: t -> domain:string -> name:string -> Ipaddr.V4.t -> vm_stop_mode ->
 (** [add_vm t domain name ip stop_mode delay ttl] adds a VM to be
     monitored by jitsu.  FIXME. *)
 
-val stop_expired_vms: t -> unit
+val stop_expired_vms: t -> unit Lwt.t
 (** Iterate through the internal VM table and stop VMs that haven't
     received requests for more than [ttl*2] seconds. *)
+

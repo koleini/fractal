@@ -1,6 +1,6 @@
-PACKAGES=-package lwt.syntax,lwt,dns.lwt,libvirt,cmdliner,ezxmlm,ipaddr,str,conduit,conduit.lwt-unix,xen-api-client
+PACKAGES=-package lwt.syntax,lwt,dns.lwt,libvirt,cmdliner,ezxmlm,ipaddr,str,conduit,conduit.lwt-unix,xen-api-client,xen-api-client.lwt
 INCLUDE=
-OPT=-linkpkg -g 
+OPT=-linkpkg -g
 OCAMLOPT=ocamlopt -w A-4-44
 FILES=synjitsu.mli synjitsu.ml jitsu.mli jitsu.ml main.ml
 PWD=$(shell pwd)

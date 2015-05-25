@@ -130,16 +130,16 @@ let or_abort f =
   | Failure m -> (Printf.fprintf stderr "Fatal error: %s" m); exit 1
 
 let or_warn msg f =
-  try f () with
-  | Failure m -> (log (Printf.sprintf "Warning: %s\nReceived exception: %s" msg m)); ()
+  try_lwt f () with
+  | Failure m -> (log (Printf.sprintf "Warning: %s\nReceived exception: %s" msg m)); return ()
 
 let jitsu toolstack connstr bindaddr bindport forwarder forwardport response_delay 
     map_domain ttl vm_stop_mode use_synjitsu =
   let rec maintenance_thread t timeout =
     Lwt_unix.sleep timeout >>= fun () ->
     log ".";
-    or_warn "Unable to stop expired VMs" (fun () -> Jitsu.stop_expired_vms t);
-    maintenance_thread t timeout;
+    or_warn "Unable to stop expired VMs" (fun () -> Jitsu.stop_expired_vms t)
+    >> maintenance_thread t timeout;
   in
   Lwt_main.run (
     ((match forwarder with
@@ -153,12 +153,8 @@ let jitsu toolstack connstr bindaddr bindport forwarder forwardport response_del
                 Lwt.return (Some r)
       )
      >>= fun forward_resolver ->
-     let mgr = match toolstack with
-       | "xapi" -> Xen_api
-       | "lobvirt" -> Libv
-     in
-     log (Printf.sprintf "Connecting to %s...\n" connstr);
-     let t = or_abort (fun () -> Jitsu.create mgr log connstr forward_resolver ~use_synjitsu ()) in
+     log (Printf.sprintf "Connecting to %s...\n" connstr); 
+     lwt t = or_abort (fun () -> Jitsu.create toolstack log connstr forward_resolver ~use_synjitsu ()) in
      Lwt.choose [(
          (* main thread, DNS server *)
          let triple (dns,ip,name) =

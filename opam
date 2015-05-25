@@ -12,7 +12,8 @@ depends: [  "lwt"
             "ezxmlm" 
             "conduit"
             "vchan"
-            "xen-api-client" ]
+            "xen-api-client"
+            "core" ]
 depexts: [
   [["debian"] ["libvirt-bin" "libvirt-dev"]]
   [["ubuntu"] ["libvirt-bin" "libvirt-dev"]]

@@ -16,7 +16,13 @@
 
 type t
 
-val create : Libvirt.rw Libvirt.Connect.t -> (string -> unit) -> string -> string -> t
+type xen_api = {rpc : Rpc.call -> Rpc.response Lwt.t; session_id : string;}
+
+type conn =
+  | Lconn of Libvirt.rw Libvirt.Connect.t
+  | Xconn of xen_api
+
+val create : conn -> (string -> unit) -> string -> string -> t
 val disconnect : t -> unit Lwt.t
 val connect : t -> unit Lwt.t
 val send : t -> Cstruct.t -> unit Lwt.t

@@ -16,25 +16,18 @@
 
 open Lwt
 open Dns
-open Libvirt
-open Xen_api
 open Xen_api_lwt_unix
 
 let json = ref false
 
 type vm_stop_mode = VmStopDestroy | VmStopSuspend | VmStopShutdown
 
-type manager = Xapi | Libv
-
-type xen_api = {rpc : Rpc.call -> Rpc.response Lwt.t; session_id : string;}
-
-type conn =
-  | Lconn of rw Libvirt.Connect.t
-  | Xconn of xen_api
+type mgr = Xapi | Libv
 
 type vm_metadata = {
-  vm_name : string;             (* Unique name of VM. Matches name in libvirt *)
-  vm_uuid : Libvirt.uuid;       (* Libvirt data structure for this VM *)
+  vm_name : string;              (* Unique name of VM. Matches name in libvirt *)
+  vm_uuid : Libvirt.uuid option; (* Libvirt data structure for this VM *)
+  vm_opaqueRef : string option;  (* Xapi reference to VM *)       
 
   mac : Macaddr.t option;       (* MAC addr of this domain, if known. Used for gARP *)
   ip : Ipaddr.V4.t;                (* IP addr of this domain *)
@@ -52,8 +45,8 @@ type vm_metadata = {
 
 type t = {
   db : Loader.db;                         (* DNS database *)
-  log : string -> unit;                   (* Log function *) 
-  connection : conn;                      (* connection to vm manager *)
+  log : string -> unit;                   (* Log function *)
+  connection : Synjitsu.conn;             (* connection to vm manager *)
   forward_resolver : Dns_resolver_unix.t option; (* DNS to forward request to if no
                                              local match *)
   synjitsu : Synjitsu.t option;
@@ -63,24 +56,36 @@ type t = {
   (* vm hash table indexed by vm name *)
 }
 
+(* libvirt function call *)
 let try_libvirt msg f =
   try f () with
   | Libvirt.Virterror e -> raise (Failure (Printf.sprintf "%s: %s" msg (Libvirt.Virterror.to_string e)))
 
-let create mgr log connstr forward_resolver ?vm_count:(vm_count=7) ?use_synjitsu:(use_synjitsu=None) () =
-  lwt connection = match mgr with
-  | Libv -> return
-              (Lconn (try_libvirt "Unable to connect" (fun () -> Libvirt.Connect.connect ~name:connstr ())))
-  | Xapi -> 
-      let (uri, password) = List.split_n (String.split ~on:':' connstr) 2 in
-      let rpc = if !json then make_json !uri else make !uri in
+let exn_to_string = function
+	| Api_errors.Server_error(code, params) ->
+		Printf.sprintf "%s %s" code (String.concat " " params)
+	| e -> Printexc.to_string e
+
+(* xapi function call *)
+let try_xapi msg f =
+  try f () with
+  | e -> raise (Failure (Printf.sprintf "%s: %s" msg (exn_to_string e)))
+
+let create toolstack log connstr forward_resolver ?vm_count:(vm_count=7) ?use_synjitsu:(use_synjitsu=None) () =
+  lwt connection = match toolstack with
+  | "libvirt" ->
+      return (Synjitsu.Lconn (try_libvirt "Unable to connect" (fun () -> Libvirt.Connect.connect ~name:connstr ())))
+  | "xapi" ->
+      let s = Str.split (Str.regexp ":") connstr in
+      let (uri, password) = (List.hd s, List.nth s 1) in
+      let rpc = if !json then make_json uri else make uri in
       lwt session_id =
       try_lwt
         Session.login_with_password rpc "root" password "1.0"
       with
       | exn -> raise (Failure (Printf.sprintf "%s" (Printexc.to_string exn)))
       in
-        return (Xconn {rpc = rpc; session_id = session_id})
+        return (Synjitsu.Xconn {rpc = rpc; session_id = session_id})
   in
   let synjitsu = match use_synjitsu with
   | Some domain -> let t = (Synjitsu.create connection log domain "synjitsu") in
@@ -88,8 +93,9 @@ let create mgr log connstr forward_resolver ?vm_count:(vm_count=7) ?use_synjitsu
             Some t
   | None -> None
   in
+  return
   { db = Loader.new_db ();
-    log = log; 
+    log = log;
     connection;
     forward_resolver = forward_resolver;
     synjitsu;
@@ -107,6 +113,16 @@ let fallback t _class _type _name =
 
 (* convert vm state to string *)
 let string_of_vm_state = function
+  | `Running   -> "running"
+  | `Paused    -> "paused"
+  | `Shutdown  -> "shutdown"
+  | `Shutoff   -> "shutoff"
+  | `NoState   -> "no state"
+  | `Blocked   -> "blocked"
+  | `Crashed   -> "crashed"
+  | `Suspended -> "suspended"
+  | `Halted    -> "halted"
+(*
   | Libvirt.Domain.InfoNoState -> "no state"
   | Libvirt.Domain.InfoRunning -> "running"
   | Libvirt.Domain.InfoBlocked -> "blocked"
@@ -114,16 +130,39 @@ let string_of_vm_state = function
   | Libvirt.Domain.InfoShutdown -> "shutdown"
   | Libvirt.Domain.InfoShutoff -> "shutoff"
   | Libvirt.Domain.InfoCrashed -> "crashed"
+*)
+
+exception No_value
+
+let opt_get p = match p with Some x -> x | None -> raise No_value
 
 let lookup_uuid t vm_uuid =
-  try_libvirt (Printf.sprintf "Unable to find VM by UUID %s" vm_uuid) (fun () -> Libvirt.Domain.lookup_by_uuid t.connection vm_uuid)
+  let connection = match t.connection with Lconn c -> c in
+  let uuid = opt_get vm_uuid in
+    try_libvirt (Printf.sprintf "Unable to find VM by UUID %s" uuid) (fun () -> Libvirt.Domain.lookup_by_uuid connection uuid)
 
 let get_vm_info t vm =
   try_libvirt "Unable to get VM info" (fun () -> Libvirt.Domain.get_info (lookup_uuid t vm.vm_uuid))
 
 let get_vm_state t vm =
-  let info = get_vm_info t vm in
-  try_libvirt "Unable to get VM state" (fun () -> info.Libvirt.Domain.state)
+  match t.connection with
+  | Lconn _ ->
+      let info = get_vm_info t vm in
+      let state =
+        try_libvirt "Unable to get VM state" (fun () -> info.Libvirt.Domain.state) in
+      begin match state with
+      | Libvirt.Domain.InfoRunning  -> return `Running
+      | Libvirt.Domain.InfoPaused   -> return `Paused
+      | Libvirt.Domain.InfoShutdown -> return `Shutdown
+      | Libvirt.Domain.InfoShutoff  -> return `Shutoff
+      | Libvirt.Domain.InfoNoState  -> return `NoState
+      | Libvirt.Domain.InfoBlocked  -> return `Blocked
+      | Libvirt.Domain.InfoCrashed  -> return `Crashed
+      end
+  | Xconn c ->
+      let vm_ref = opt_get vm.vm_opaqueRef in
+        try_xapi "Unable to get VM state" (fun () ->
+          VM.get_power_state ~rpc:c.rpc ~session_id:c.session_id ~self:vm_ref)
 
 let destroy_vm t vm =
   try_libvirt "Unable to destroy VM" (fun () -> Libvirt.Domain.destroy (lookup_uuid t vm.vm_uuid))
@@ -141,23 +180,25 @@ let create_vm t vm =
   try_libvirt "Unable to create VM" (fun () -> Libvirt.Domain.create (lookup_uuid t vm.vm_uuid))
 
 let stop_vm t vm =
-  match get_vm_state t vm with
+  get_vm_state t vm
+  >>= fun state ->
+  match state with
+(*
   | Libvirt.Domain.InfoRunning ->
     begin match vm.how_to_stop with
       | VmStopShutdown -> t.log (Printf.sprintf "VM shutdown: %s\n" vm.vm_name); shutdown_vm t vm
       | VmStopSuspend  -> t.log (Printf.sprintf "VM suspend: %s\n" vm.vm_name) ; suspend_vm t vm
       | VmStopDestroy  -> t.log (Printf.sprintf "VM destroy: %s\n" vm.vm_name) ; destroy_vm t vm
-    end
-  | _ -> ()
+    end *)
+  | _ -> return ()
 
 let start_vm t vm =
-  let state = get_vm_state t vm in
+  lwt state = get_vm_state t vm in
   t.log (Printf.sprintf "Starting %s (%s)" vm.vm_name (string_of_vm_state state));
   match state with
-  | Libvirt.Domain.InfoPaused | Libvirt.Domain.InfoShutdown
-  | Libvirt.Domain.InfoShutoff ->
+  | `Paused | `Shutdown | `Shutoff | `Halted ->
     let () = match state with
-      | Libvirt.Domain.InfoPaused ->
+      | `Paused ->
         t.log " --> resuming vm...\n";
         resume_vm t vm
       | _ ->
@@ -183,11 +224,10 @@ let start_vm t vm =
     vm.total_starts <- vm.total_starts + 1;
     (* sleeping a bit *)
     Lwt_unix.sleep vm.query_response_delay
-  | Libvirt.Domain.InfoRunning ->
+  | `Running ->
     t.log " --! VM is already running\n";
     Lwt.return_unit
-  | Libvirt.Domain.InfoBlocked | Libvirt.Domain.InfoCrashed
-  | Libvirt.Domain.InfoNoState ->
+  | `Blocked | `Crashed | `NoState | `Suspended ->
     t.log " --! VM cannot be started from this state.\n";
     Lwt.return_unit
 
@@ -291,7 +331,11 @@ let get_mac domain =
 let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode
     ~delay:response_delay ~ttl =
   (* check if vm_name exists and set up VM record *)
-  let vm_dom = try_libvirt "Unable to lookup VM by name" (fun () -> Libvirt.Domain.lookup_by_name t.connection vm_name) in
+  let vm_dom = match t.connection with
+    | Lconn c ->
+        try_libvirt "Unable to lookup VM by name" (fun () -> Libvirt.Domain.lookup_by_name c vm_name)
+    | _ -> raise (Failure "jitsu: xapi not added yet")
+  in
   let vm_uuid = try_libvirt (Printf.sprintf "Unable to get uuid for %s" vm_name) (fun () -> Libvirt.Domain.get_uuid vm_dom) in
   let mac = get_mac vm_dom in
   (match mac with
@@ -314,7 +358,8 @@ let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode
   (* reuse existing record if possible *)
   let record = match existing_record with
     | None -> { vm_name;
-                vm_uuid;
+                vm_uuid = Some vm_uuid;
+                vm_opaqueRef = None;
                 mac;
                 ip=vm_ip;
                 how_to_stop = stop_mode;
@@ -334,22 +379,16 @@ let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode
 (* iterate through t.name_table and stop VMs that haven't received
    requests for more than ttl*2 seconds *)
 let stop_expired_vms t =
-  let expired_vms = Array.make (Hashtbl.length t.name_table) None in
+  let expired_vms = [] in
   (* TODO this should be run in lwt, but hopefully it is reasonably fast this way. *)
   let current_time = int_of_float (Unix.time ()) in
   let is_expired vm_meta =
     current_time - vm_meta.requested_ts > vm_meta.vm_ttl
   in
-  let pos = ref (-1) in
-  let put_in_array _ vm_meta =
-    incr pos;
+  let put_in_array _ vm_meta exp =
     match is_expired vm_meta with
-    | true  -> expired_vms.(!pos) <- Some vm_meta
-    | false -> expired_vms.(!pos) <- None
+    | true  -> vm_meta::exp
+    | false -> exp
   in
-  Hashtbl.iter put_in_array t.name_table;
-  let stop_vm = function
-    | None    -> ()
-    | Some vm -> stop_vm t vm
-  in
-  Array.iter stop_vm expired_vms 
+  let expired_vms = Hashtbl.fold put_in_array t.name_table [] in
+  Lwt_list.iter_s (stop_vm t) expired_vms
