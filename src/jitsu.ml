@@ -22,8 +22,6 @@ let json = ref false
 
 type vm_stop_mode = VmStopDestroy | VmStopSuspend | VmStopShutdown
 
-type mgr = Xapi | Libv
-
 type vm_metadata = {
   vm_name : string;              (* Unique name of VM. Matches name in libvirt *)
   vm_uuid : Libvirt.uuid option; (* Libvirt data structure for this VM *)
@@ -136,18 +134,17 @@ exception No_value
 
 let opt_get p = match p with Some x -> x | None -> raise No_value
 
-let lookup_uuid t vm_uuid =
-  let connection = match t.connection with Lconn c -> c in
+let lookup_uuid connection vm_uuid =
   let uuid = opt_get vm_uuid in
     try_libvirt (Printf.sprintf "Unable to find VM by UUID %s" uuid) (fun () -> Libvirt.Domain.lookup_by_uuid connection uuid)
 
-let get_vm_info t vm =
-  try_libvirt "Unable to get VM info" (fun () -> Libvirt.Domain.get_info (lookup_uuid t vm.vm_uuid))
+let get_vm_info connection vm =
+  try_libvirt "Unable to get VM info" (fun () -> Libvirt.Domain.get_info (lookup_uuid connection vm.vm_uuid))
 
 let get_vm_state t vm =
   match t.connection with
-  | Lconn _ ->
-      let info = get_vm_info t vm in
+  | Lconn c ->
+      let info = get_vm_info c vm in
       let state =
         try_libvirt "Unable to get VM state" (fun () -> info.Libvirt.Domain.state) in
       begin match state with
@@ -165,31 +162,58 @@ let get_vm_state t vm =
           VM.get_power_state ~rpc:c.rpc ~session_id:c.session_id ~self:vm_ref)
 
 let destroy_vm t vm =
-  try_libvirt "Unable to destroy VM" (fun () -> Libvirt.Domain.destroy (lookup_uuid t vm.vm_uuid))
+  match t.connection with
+  | Lconn c -> try_libvirt "Unable to destroy VM"
+                 (fun () -> Libvirt.Domain.destroy (lookup_uuid c vm.vm_uuid));
+               return ()
+  | Xconn c -> let vm_ref = opt_get vm.vm_opaqueRef in
+               try_xapi "Unable to destroy VM"
+                 (fun () -> VM.destroy ~rpc:c.rpc ~session_id:c.session_id ~self:vm_ref)
 
 let shutdown_vm t vm =
-  try_libvirt "Unable to shutdown VM" (fun () -> Libvirt.Domain.shutdown (lookup_uuid t vm.vm_uuid))
+  match t.connection with
+  | Lconn c -> try_libvirt "Unable to shutdown VM"
+                 (fun () -> Libvirt.Domain.shutdown (lookup_uuid c vm.vm_uuid));
+               return ()
+  | Xconn c -> let vm_ref = opt_get vm.vm_opaqueRef in
+               try_xapi "Unable to shutdown VM"
+                 (fun () -> VM.hard_shutdown ~rpc:c.rpc ~session_id:c.session_id ~vm:vm_ref)
 
 let suspend_vm t vm =
-  try_libvirt "Unable to suspend VM" (fun () -> Libvirt.Domain.suspend (lookup_uuid t vm.vm_uuid))
+  match t.connection with
+  | Lconn c -> try_libvirt "Unable to suspend VM"
+                 (fun () -> Libvirt.Domain.suspend (lookup_uuid c vm.vm_uuid));
+               return ()
+  | Xconn c -> raise (Failure "Suspend: not supported for xapi.") (* TODO *)
 
 let resume_vm t vm =
-  try_libvirt "Unable to resume VM" (fun () -> Libvirt.Domain.resume (lookup_uuid t vm.vm_uuid))
+  match t.connection with
+  | Lconn c -> try_libvirt "Unable to resume VM"
+                 (fun () -> Libvirt.Domain.resume (lookup_uuid c vm.vm_uuid));
+               return ()
+  | Xconn c -> let vm_ref = opt_get vm.vm_opaqueRef in
+               try_xapi "Unable to resume VM"
+                 (fun () -> VM.resume ~rpc:c.rpc ~session_id:c.session_id ~vm:vm_ref ~start_paused:false ~force:true)
 
 let create_vm t vm =
-  try_libvirt "Unable to create VM" (fun () -> Libvirt.Domain.create (lookup_uuid t vm.vm_uuid))
+  match t.connection with
+  | Lconn c -> try_libvirt "Unable to create VM"
+                 (fun () -> Libvirt.Domain.create (lookup_uuid c vm.vm_uuid));
+               return ()
+  | Xconn c -> (* let vm_ref = opt_get vm.vm_opaqueRef in
+               try_xapi "Unable to create VM"
+                 (create_vm ~connection:c ~name_label:vm.vm_name ~pV_kernel:"") (* TODO *) *)
+               raise (Failure "Create: not supported for xapi.")
 
 let stop_vm t vm =
-  get_vm_state t vm
-  >>= fun state ->
+  lwt state = get_vm_state t vm in
   match state with
-(*
-  | Libvirt.Domain.InfoRunning ->
+  | `Runnning ->
     begin match vm.how_to_stop with
       | VmStopShutdown -> t.log (Printf.sprintf "VM shutdown: %s\n" vm.vm_name); shutdown_vm t vm
       | VmStopSuspend  -> t.log (Printf.sprintf "VM suspend: %s\n" vm.vm_name) ; suspend_vm t vm
       | VmStopDestroy  -> t.log (Printf.sprintf "VM destroy: %s\n" vm.vm_name) ; destroy_vm t vm
-    end *)
+    end
   | _ -> return ()
 
 let start_vm t vm =
@@ -197,7 +221,7 @@ let start_vm t vm =
   t.log (Printf.sprintf "Starting %s (%s)" vm.vm_name (string_of_vm_state state));
   match state with
   | `Paused | `Shutdown | `Shutoff | `Halted ->
-    let () = match state with
+    lwt () = match state with
       | `Paused ->
         t.log " --> resuming vm...\n";
         resume_vm t vm
@@ -379,7 +403,6 @@ let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode
 (* iterate through t.name_table and stop VMs that haven't received
    requests for more than ttl*2 seconds *)
 let stop_expired_vms t =
-  let expired_vms = [] in
   (* TODO this should be run in lwt, but hopefully it is reasonably fast this way. *)
   let current_time = int_of_float (Unix.time ()) in
   let is_expired vm_meta =
