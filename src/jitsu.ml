@@ -37,7 +37,7 @@ type vm_metadata = {
                                    seconds after [requested_ts] *)
   how_to_stop : vm_stop_mode;   (* how to stop the VM on timeout *)
   mutable started_ts : int;     (* started timestamp *)
-  mutable requested_ts : int;   (* last request timestamp *)
+  mutable requested_ts : int;   (* last request  Unix.Unix_error(Unix.EACCES, "bind", timestamp *)
   mutable total_requests : int;
   mutable total_starts : int;
 }
@@ -98,22 +98,24 @@ let define_vm ~rpc ~session_id ~name_label ~pV_kernel =
 	~start_delay:0L ~shutdown_delay:0L ~order:0L ~suspend_SR:"OpaqueRef:NULL" ~version:0L in
   lwt net = Network.get_by_name_label rpc session_id "Pool-wide network associated with eth0" in
   lwt vif = VIF.create ~rpc:rpc ~session_id:session_id
-    ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC:"" (* "6a:d2:12:b8:96:00" *) ~mTU:0L (* TODO: create a random mac? *)
+    ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC:"" ~mTU:0L
 	~other_config:[] ~qos_algorithm_type:"" ~qos_algorithm_params:[]  ~locking_mode:`network_default
 	~ipv4_allowed:[] ~ipv6_allowed:[] in
   return (vm, vif)
 
-let create toolstack log connstr forward_resolver ?vm_count:(vm_count=7) ?use_synjitsu:(use_synjitsu=None) () =
+let create toolstack log connstr passwd forward_resolver
+             ?vm_count:(vm_count=7) ?use_synjitsu:(use_synjitsu=None) () =
   lwt connection = match toolstack with
   | "libvirt" ->
       return (Synjitsu.Lconn (try_libvirt "Unable to connect" (fun () -> Libvirt.Connect.connect ~name:connstr ())))
   | "xapi" ->
-      let s = Str.split (Str.regexp ":") connstr in
-      let (uri, password) = (List.hd s, List.nth s 1) in
-      let rpc = if !json then make_json uri else make uri in
+      let rpc = if !json then make_json connstr else make connstr in
       lwt session_id =
       try_lwt
-        Session.login_with_password rpc "root" password "1.0"
+        print_endline "start rpc ...";
+        lwt s = Session.login_with_password rpc "root" passwd "1.0" in
+        print_endline "session received ...";
+        return s
       with
       | exn -> raise (Failure (Printf.sprintf "%s" (Printexc.to_string exn)))
       in
@@ -154,15 +156,6 @@ let string_of_vm_state = function
   | `Crashed   -> "crashed"
   | `Suspended -> "suspended"
   | `Halted    -> "halted"
-(*
-  | Libvirt.Domain.InfoNoState -> "no state"
-  | Libvirt.Domain.InfoRunning -> "running"
-  | Libvirt.Domain.InfoBlocked -> "blocked"
-  | Libvirt.Domain.InfoPaused -> "paused"
-  | Libvirt.Domain.InfoShutdown -> "shutdown"
-  | Libvirt.Domain.InfoShutoff -> "shutoff"
-  | Libvirt.Domain.InfoCrashed -> "crashed"
-*)
 
 exception No_value
 
@@ -218,31 +211,41 @@ let suspend_vm t vm =
   | Lconn c -> try_libvirt "Unable to suspend VM"
                  (fun () -> Libvirt.Domain.suspend (lookup_uuid c vm.vm_uuid));
                return ()
-  | Xconn c -> raise (Failure "Suspend: not supported for xapi.") (* TODO *)
+  | Xconn c -> let vm_ref = opt_get vm.vm_opaqueRef in
+               try_xapi "Unable to suspend VM"
+                 (fun () -> VM.suspend ~rpc:c.rpc ~session_id:c.session_id ~vm:vm_ref)
 
-let resume_vm t vm =
+let unsuspend_vm t vm =
   match t.connection with
-  | Lconn c -> try_libvirt "Unable to resume VM"
+  | Lconn c -> try_libvirt "Unable to resume VM from suspend"
+                 (fun () -> Libvirt.Domain.create (lookup_uuid c vm.vm_uuid));
+               return ()
+  | Xconn c -> let vm_ref = opt_get vm.vm_opaqueRef in
+               try_xapi "Unable to resume VM from suspend"
+                 (fun () -> VM.resume ~rpc:c.rpc ~session_id:c.session_id ~vm:vm_ref ~start_paused:false ~force:true)
+
+let unpause_vm t vm =
+  match t.connection with
+  | Lconn c -> try_libvirt "Unable to resume VM from pause"
                  (fun () -> Libvirt.Domain.resume (lookup_uuid c vm.vm_uuid));
                return ()
   | Xconn c -> let vm_ref = opt_get vm.vm_opaqueRef in
-               try_xapi "Unable to resume VM"
-                 (fun () -> VM.resume ~rpc:c.rpc ~session_id:c.session_id ~vm:vm_ref ~start_paused:false ~force:true)
+               try_xapi "Unable to resume VM from pause"
+                 (fun () -> VM.unpause ~rpc:c.rpc ~session_id:c.session_id ~vm:vm_ref)
 
 let create_vm t vm =
   match t.connection with
-  | Lconn c -> try_libvirt "Unable to create VM"
+  | Lconn c -> try_libvirt "Unable to create (start) VM"
                  (fun () -> Libvirt.Domain.create (lookup_uuid c vm.vm_uuid));
                return ()
-  | Xconn c -> (* let vm_ref = opt_get vm.vm_opaqueRef in
-               try_xapi "Unable to create VM"
-                 (create_vm ~connection:c ~name_label:vm.vm_name ~pV_kernel:"") (* TODO *) *)
-               raise (Failure "Create: not supported for xapi.")
+  | Xconn c -> let vm_ref = opt_get vm.vm_opaqueRef in
+               try_xapi "Unable to create (start) VM"
+                 (fun () -> VM.start ~rpc:c.rpc ~session_id:c.session_id ~vm:vm_ref ~start_paused:false ~force:true)
 
 let stop_vm t vm =
   lwt state = get_vm_state t vm in
   match state with
-  | `Runnning ->
+  | `Running ->
     begin match vm.how_to_stop with
       | VmStopShutdown -> t.log (Printf.sprintf "VM shutdown: %s\n" vm.vm_name); shutdown_vm t vm
       | VmStopSuspend  -> t.log (Printf.sprintf "VM suspend: %s\n" vm.vm_name) ; suspend_vm t vm
@@ -254,11 +257,14 @@ let start_vm t vm =
   lwt state = get_vm_state t vm in
   t.log (Printf.sprintf "Starting %s (%s)" vm.vm_name (string_of_vm_state state));
   match state with
-  | `Paused | `Shutdown | `Shutoff | `Halted ->
+  | `Paused | `Shutdown | `Shutoff | `Halted | `Suspended ->
     lwt () = match state with
       | `Paused ->
-        t.log " --> resuming vm...\n";
-        resume_vm t vm
+        t.log " --> resuming vm from pause...\n";
+        unpause_vm t vm
+      | `Suspended ->
+        t.log " --> resuming vm from suspend...\n";
+        unsuspend_vm t vm
       | _ ->
         t.log " --> creating vm...\n";
         create_vm t vm
@@ -285,7 +291,7 @@ let start_vm t vm =
   | `Running ->
     t.log " --! VM is already running\n";
     Lwt.return_unit
-  | `Blocked | `Crashed | `NoState | `Suspended ->
+  | `Blocked | `Crashed | `NoState ->
     t.log " --! VM cannot be started from this state.\n";
     Lwt.return_unit
 
@@ -405,7 +411,8 @@ let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode ~delay:respo
                      (fun () -> Libvirt.Domain.get_uuid vm_dom) in
         return (Some uuid, None, "", get_mac vm_dom)
     | Xconn c ->
-      lwt (vm, vif) = define_vm ~rpc:c.rpc ~session_id:c.session_id ~name_label:vm_name ~pV_kernel:("/boot/guest/" ^ vm_name) in
+      lwt (vm, vif) = define_vm ~rpc:c.rpc ~session_id:c.session_id
+                        ~name_label:vm_name ~pV_kernel:("/boot/guest/mir-" ^ vm_name ^ ".xen") in
       lwt mac_addr = get_vif_mac (c.rpc, c.session_id) vif in
       return (None, Some vm, vif, Macaddr.of_string mac_addr)
   in
@@ -428,7 +435,8 @@ let add_vm t ~domain:domain_as_string ~name:vm_name vm_ip stop_mode ~delay:respo
   let existing_record = (get_vm_metadata_by_name t vm_name) in
   (* reuse existing record if possible *)
   let record = match existing_record with
-    | None -> { vm_name;
+    | None -> print_endline "no record found";
+              { vm_name;
                 vm_uuid;
                 vm_opaqueRef;
                 vif_opaqueRef;

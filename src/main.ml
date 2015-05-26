@@ -57,7 +57,7 @@ let toolstack =
     "Toolstack to use to manage VMSs (xapi or libvirt). \
      libvirt is the default. "
   in
-  Arg.(value & opt string "libvirt" & info ["tool"] ~docv:"TOOL" ~doc)
+  Arg.(value & opt string "libvirt" & info ["x"; "manager"] ~docv:"TOOL" ~doc)
 
 let connstr =
   let doc =
@@ -67,6 +67,12 @@ let connstr =
   in
   Arg.(value & opt string "xen:///" & info ["c"; "connect"] ~docv:"CONNECT" ~doc)
 
+let passwd =
+  let doc =
+    "xapi login password. "
+  in
+  Arg.(value & opt string "" & info ["w"; "passwd"] ~docv:"PASSWD" ~doc)
+  
 let forwarder =
   let doc =
     "IP address of DNS server queries should be forwarded to if no local match \
@@ -133,7 +139,7 @@ let or_warn msg f =
   try_lwt f () with
   | Failure m -> (log (Printf.sprintf "Warning: %s\nReceived exception: %s" msg m)); return ()
 
-let jitsu toolstack connstr bindaddr bindport forwarder forwardport response_delay 
+let jitsu toolstack connstr passwd bindaddr bindport forwarder forwardport response_delay 
     map_domain ttl vm_stop_mode use_synjitsu =
   let rec maintenance_thread t timeout =
     Lwt_unix.sleep timeout >>= fun () ->
@@ -154,7 +160,7 @@ let jitsu toolstack connstr bindaddr bindport forwarder forwardport response_del
       )
      >>= fun forward_resolver ->
      log (Printf.sprintf "Connecting to %s...\n" connstr); 
-     lwt t = or_abort (fun () -> Jitsu.create toolstack log connstr forward_resolver ~use_synjitsu ()) in
+     lwt t = or_abort (fun () -> Jitsu.create toolstack log connstr passwd forward_resolver ~use_synjitsu ()) in
      Lwt.choose [(
          (* main thread, DNS server *)
          let triple (dns,ip,name) =
@@ -173,7 +179,7 @@ let jitsu toolstack connstr bindaddr bindport forwarder forwardport response_del
   )
 
 let jitsu_t =
-  Term.(pure jitsu $ toolstack $ connstr $ bindaddr $ bindport $ forwarder $ forwardport
+  Term.(pure jitsu $ toolstack $ connstr $ passwd $ bindaddr $ bindport $ forwarder $ forwardport
         $ response_delay $ map_domain $ ttl $ vm_stop_mode $ synjitsu_domain_uuid )
 
 let () =
