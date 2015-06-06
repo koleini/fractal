@@ -35,7 +35,7 @@ let try_xapi msg f =
   with
   | e -> Lwt.return (`Error (`Unknown (Printf.sprintf "%s: %s" msg (Printexc.to_string e))))
 
-let define_vm t ~name_label ~pV_kernel =
+let define_vm t ~name_label ~mAC ~pV_kernel =
   try_xapi "Unable to define vm" (fun () -> 
     let (rpc, session_id) = t.connection in
     lwt vm = VM.create ~rpc ~session_id
@@ -62,21 +62,25 @@ let define_vm t ~name_label ~pV_kernel =
 	  ~is_snapshot_from_vmpp:false
 	  ~appliance:"OpaqueRef:NULL"
 	  ~start_delay:0L ~shutdown_delay:0L ~order:0L ~suspend_SR:"OpaqueRef:NULL" ~version:0L in
-    lwt net = Network.get_by_name_label rpc session_id "Pool-wide network associated with eth0" in
-    lwt vif = VIF.create ~rpc:rpc ~session_id:session_id
-      ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC:"" ~mTU:0L
+    lwt net = Network.get_by_name_label ~rpc:rpc ~session_id:session_id
+                ~label:"Pool-wide network associated with eth0" in
+    lwt _vif = VIF.create ~rpc:rpc ~session_id:session_id
+      ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC ~mTU:0L
       ~other_config:[] ~qos_algorithm_type:"" ~qos_algorithm_params:[]  ~locking_mode:`network_default
 	  ~ipv4_allowed:[] ~ipv6_allowed:[] in
-    return (vm, vif)
+    lwt uuid = VM.get_uuid ~rpc:rpc ~session_id:session_id ~self:vm in
+    Lwt.return { uuid }
   )
-
-let connect connstr = 
+  
+let connect connstr =
   try_xapi "Unable to connect" (fun () -> 
       let uri  = Uri.of_string connstr in
+      let schm = match Uri.scheme uri with | Some h -> h | None -> "http" in
       let host = match Uri.host uri with | Some h -> h | None -> "127.0.0.1" in
       let user = match Uri.user uri with | Some u -> u | None -> "root" in
-      let pass = match Uri.host uri with | Some h -> h | None -> "" in
-      let rpc = if !json then make_json host else make host in
+      let pass = match Uri.password uri with | Some h -> h | None -> "" in
+      let rpc = if !json then make_json (schm ^ "://" ^ host) else make (schm ^ "://" ^ host) in
+      Printf.printf "%s %s %s %s\n" schm host user pass;
       lwt session_id = Session.login_with_password rpc user pass "1.0" in
       Lwt.return { connection = (rpc, session_id) }
     )
@@ -113,6 +117,13 @@ let get_state t vm =
     lwt domain = VM.get_by_uuid ~rpc:rpc ~session_id:session_id ~uuid:vm.uuid in
     lwt state = VM.get_power_state ~rpc:rpc ~session_id:session_id ~self:domain in
     Lwt.return (xapi_state_to_vm_state state)
+  )
+
+let get_kernel t vm =
+  try_xapi "Unable to get VM kernel" (fun () -> 
+    let (rpc, session_id) = t.connection in
+    lwt domain = VM.get_by_uuid ~rpc:rpc ~session_id:session_id ~uuid:vm.uuid in
+    VM.get_PV_kernel ~rpc:rpc ~session_id:session_id ~self:domain
   )
 
 let destroy_vm t vm =

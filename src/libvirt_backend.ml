@@ -44,6 +44,9 @@ let libvirt_state_to_vm_state = function
   | Libvirt.Domain.InfoShutoff -> Backends.VmInfoShutoff
   | Libvirt.Domain.InfoCrashed -> Backends.VmInfoCrashed
 
+let define_vm _t ~name_label:_ ~mAC:_ ~pV_kernel:_ =
+  Lwt.return (`Error (`Unknown "Under construction: devine_vm is not implemented for libvirt."))
+
 let lookup_vm_by_uuid t vm_uuid =
   (* We use UUID for internal representation, but call lookup anyway to make sure it exists *)
   try_libvirt "Unable lookup VM UUID" (fun () -> 
@@ -64,6 +67,12 @@ let get_state t vm =
       let domain = Libvirt.Domain.lookup_by_uuid t.connection vm.uuid in
       let info = Libvirt.Domain.get_info domain in
       libvirt_state_to_vm_state info.Libvirt.Domain.state
+    )
+
+let get_kernel t vm = (* TODO *)
+  try_libvirt "Unable to get VM kernel" (fun () -> 
+      let _domain = Libvirt.Domain.lookup_by_uuid t.connection vm.uuid in
+      ""
     )
 
 let destroy_vm t vm =
@@ -90,7 +99,7 @@ let resume_vm t vm =
       Libvirt.Domain.resume domain
     )
 
-let unsuspend_vm t vm = Lwt.return (`Ok ())
+let unsuspend_vm _t _vm = Lwt.return (`Ok ())
 
 let start_vm t vm =
   try_libvirt "Unable to start VM" (fun () -> 

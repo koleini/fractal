@@ -39,6 +39,10 @@ sig
   (** Get VM UUID from [vm] type *)
   val get_domain_id : t -> vm -> [ `Ok of int | `Error of error ] Lwt.t
   (** Get VM domain ID *)
+  val get_kernel : t -> vm -> [ `Ok of string | `Error of error ] Lwt.t
+  (** Get VM kernel *)
+  val define_vm : t -> name_label:string -> mAC:string -> pV_kernel:string -> [ `Ok of vm | `Error of error ] Lwt.t
+  (** Define VM *)
 
   val get_mac : t -> vm -> [ `Ok of Macaddr.t option | `Error of error ] Lwt.t
   (** Get MAC address of this VM *)

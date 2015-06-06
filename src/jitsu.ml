@@ -26,7 +26,7 @@ module Make (Backend : Backends.VM_BACKEND) = struct
 
     query_response_delay : float; (* in seconds, delay after startup before
                                      sending query response *)
-    vm_ttl : int;                 (* TTL in seconds. VM is stopped [vm_ttl]
+    mutable vm_ttl : int;         (* TTL in seconds. VM is stopped [vm_ttl]
                                      seconds after [requested_ts] *)
     how_to_stop : Backends.vm_stop_mode;   (* how to stop the VM on timeout *)
     mutable started_ts : int;     (* started timestamp *)
@@ -259,6 +259,7 @@ module Make (Backend : Backends.VM_BACKEND) = struct
       ~delay:response_delay ~ttl =
     (* check if vm_name exists and set up VM record *)
 
+    Printf.printf "vm name: %s\n" vm_name;
     or_backend_error "Unable to lookup VM by name" (Backend.lookup_vm_by_name t.backend) vm_name >>= fun vm_dom ->
     or_backend_error "Unable to get MAC for VM" (Backend.get_mac t.backend) vm_dom >>= fun vm_mac ->
 
@@ -297,6 +298,41 @@ module Make (Backend : Backends.VM_BACKEND) = struct
     Hashtbl.replace t.domain_table domain_t record;
     Hashtbl.replace t.name_table vm_name record;
     return_unit
+
+  (* add a replica to jitsu *)
+  let add_replica t ~name:vm_name =
+    or_backend_error "Unable to lookup VM by name" (Backend.lookup_vm_by_name t.backend) vm_name >>= fun vm_dom ->
+    or_backend_error "Unable to get VM kernel" (Backend.get_kernel t.backend) vm_dom >>= fun kernel ->
+    let m_record = match get_vm_metadata_by_name t vm_name with
+      | None -> raise (Failure (Printf.sprintf "%s: Record not found" vm_name))
+      | Some existing_record -> existing_record
+    in
+    let (r_mac, r_ip) = List.hd !Pool.mac_ip in Pool.mac_ip := List.tl !Pool.mac_ip;
+    let r_name = r_mac in (* XXX: use mac address as the unique name for replica *)
+    or_backend_error "Unable to define replica VM"
+      (Backend.define_vm ~name_label:r_name ~mAC:r_mac ~pV_kernel:kernel) t.backend >>= fun r_dom ->
+    let existing_record = (get_vm_metadata_by_name t r_name) in
+    let record = match existing_record with
+      | None -> { vm=r_dom;
+                  ip=Ipaddr.V4.of_string_exn r_ip;
+                  how_to_stop = m_record.how_to_stop;
+                  vm_ttl = m_record.vm_ttl; (* note *2 here *)
+                  query_response_delay = m_record.query_response_delay;
+                  started_ts = 0;
+                  requested_ts = 0;
+                  total_requests = 0;
+                  total_starts = 0 }
+      | Some _ -> raise (Failure (Printf.sprintf "%s: Mac address conflict" r_name))
+    in
+    (* add/replace in name_table hash table *)
+    Hashtbl.replace t.name_table r_name record;
+    return_unit
+    
+  let del_replica t ~name:vm_name =
+    or_backend_error "Unable to lookup VM by name" (Backend.lookup_vm_by_name t.backend) vm_name >>= fun _ ->
+    match get_vm_metadata_by_name t vm_name with
+      | None -> Lwt.return (t.log (Printf.sprintf "%s: No record found.\n" vm_name))
+      | Some vm -> Lwt.return (vm.vm_ttl <- 0)
 
   (* iterate through t.name_table and stop VMs that haven't received
      requests for more than ttl*2 seconds *)
