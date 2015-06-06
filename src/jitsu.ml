@@ -115,7 +115,7 @@ module Make (Backend : Backends.VM_BACKEND) = struct
       end
     | _ -> Lwt.return_unit (* VM already stopped *)
 
-  let start_vm t vm =
+  let start_vm t vm first =
     get_vm_name t vm >>= fun vm_name ->
     get_vm_state t vm >>= fun vm_state ->
     t.log (Printf.sprintf "Starting %s (%s)" vm_name (string_of_vm_state vm_state));
@@ -141,6 +141,16 @@ module Make (Backend : Backends.VM_BACKEND) = struct
       begin
         match vm_mac with
         | Some m -> begin
+          (* configure open vswitch *)
+            lwt uuid = or_backend_error "Unable to get uuid for VM" (Backend.get_uuid t.backend) vm.vm in
+            let mac = Macaddr.to_string m in
+            let _ = match first with
+              | true -> Sys.command
+                (Printf.sprintf "./ovs.sh add_app_of13.sh 1 %s %s %s" (Ipaddr.V4.to_string vm.ip) mac uuid)
+              | false -> Sys.command
+                (Printf.sprintf "./ovs.sh add_replica_of13.sh 1 %s %s %s" (Ipaddr.V4.to_string vm.ip) mac uuid)
+            in
+          (* configure synjitsu *)
             match t.synjitsu with
             | Some s -> begin
                 t.log (Printf.sprintf "Notifying Synjitsu of MAC %s\n" (Macaddr.to_string m));
@@ -213,7 +223,7 @@ module Make (Backend : Backends.VM_BACKEND) = struct
                 (* update stats *)
                 vm.total_requests <- vm.total_requests + 1;
                 vm.requested_ts <- int_of_float (Unix.time());
-                start_vm t vm >>= fun () ->
+                start_vm t vm true >>= fun () ->
                 (* print stats *)
                 get_stats t vm >>= fun vm_stats_str ->
                 t.log vm_stats_str;
@@ -326,6 +336,7 @@ module Make (Backend : Backends.VM_BACKEND) = struct
     in
     (* add/replace in name_table hash table *)
     Hashtbl.replace t.name_table r_name record;
+    start_vm t record false >>
     return_unit
     
   let del_replica t ~name:vm_name =
