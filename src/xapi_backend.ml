@@ -80,7 +80,7 @@ let connect connstr =
       let user = match Uri.user uri with | Some u -> u | None -> "root" in
       let pass = match Uri.password uri with | Some h -> h | None -> "" in
       let rpc = if !json then make_json (schm ^ "://" ^ host) else make (schm ^ "://" ^ host) in
-      Printf.printf "%s %s %s %s\n" schm host user pass;
+      (* Printf.printf "%s %s %s %s\n" schm host user pass; *)
       lwt session_id = Session.login_with_password rpc user pass "1.0" in
       Lwt.return { connection = (rpc, session_id) }
     )

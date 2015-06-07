@@ -13,8 +13,8 @@ all: $(BIN)/jitsu
 
 $(BIN)/jitsu: $(SRC)/jitsu.ml $(SRC)/main.ml $(SRC)/synjitsu.mli $(SRC)/synjitsu.ml $(SRC)/jitsu.mli $(SRC)/libvirt_backend.ml $(SRC)/xapi_backend.ml $(SRC)/backends.mli $(SRC)/pool.ml $(SRC)/$(CLNT)/client.ml
 	mkdir -p $(BIN)
-	cd $(SRC)/$(CLNT) ;	$(MAKE)
-	cd $(SRC) ; ocamlfind $(OCAMLOPT) $(INCLUDE) $(PACKAGES) $(OPT) $(FILES) -o $(BIN)/jitsu -syntax camlp4o
+	cd $(SRC)/$(CLNT) ;	eval `opam config env` ; $(MAKE)
+	cd $(SRC) ; eval `opam config env` ; ocamlfind $(OCAMLOPT) $(INCLUDE) $(PACKAGES) $(OPT) $(FILES) -o $(BIN)/jitsu -syntax camlp4o
 
 install: $(BIN)/jitsu
 	@echo "Installing jitsu in $(INSTALLDIR)..."

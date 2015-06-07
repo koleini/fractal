@@ -1,0 +1,5 @@
+TODO:
+
+1. application number is hardcoded!
+1. Jitsu assumes one interface per vm
+2. When DNS query arrives, no error arises if name is not defined

@@ -44,6 +44,10 @@ module Make :
     (** [add_vm t domain name ip stop_mode delay ttl] adds a VM to be
         monitored by jitsu.  FIXME. *)
 
+    val add_replica: t -> name:string -> unit Lwt.t
+    (** [add_replica t name adds a replica for the VM denoted by name to be
+        monitored by jitsu.  FIXME. *)
+
     val stop_expired_vms: t -> unit Lwt.t
     (** Iterate through the internal VM table and stop VMs that haven't
         received requests for more than [ttl*2] seconds. *)

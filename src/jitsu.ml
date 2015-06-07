@@ -142,13 +142,13 @@ module Make (Backend : Backends.VM_BACKEND) = struct
         match vm_mac with
         | Some m -> begin
           (* configure open vswitch *)
-            lwt uuid = or_backend_error "Unable to get uuid for VM" (Backend.get_uuid t.backend) vm.vm in
+            lwt domid = or_backend_error "Unable to get domain id for VM" (Backend.get_domain_id t.backend) vm.vm in
             let mac = Macaddr.to_string m in
             let _ = match first with
               | true -> Sys.command
-                (Printf.sprintf "./ovs.sh add_app_of13.sh 1 %s %s %s" (Ipaddr.V4.to_string vm.ip) mac uuid)
+                (Printf.sprintf "../scripts/ovs.sh add_app_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
               | false -> Sys.command
-                (Printf.sprintf "./ovs.sh add_replica_of13.sh 1 %s %s %s" (Ipaddr.V4.to_string vm.ip) mac uuid)
+                (Printf.sprintf "./scripts/ovs.sh add_replica_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
             in
           (* configure synjitsu *)
             match t.synjitsu with
