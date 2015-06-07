@@ -223,9 +223,9 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
 				    B.define_vm backend_t ~name_label:vm_name ~mAC:mac ~pV_kernel:kernel
 				    >> return (Rpc.Enum [(Rpc.Bool true)])
 				  with exn ->
-				    Printf.printf "start_vm: %s\n%!"  (Printexc.to_string exn);
+				    Printf.printf "define_vm: %s\n%!"  (Printexc.to_string exn);
 				    return (Rpc.Enum [(Rpc.Bool false);
-						  	Rpc.String (Printf.sprintf "start_vm: %s\n%!"  (Printexc.to_string exn))])
+						  	Rpc.String (Printf.sprintf "define_vm: %s\n%!"  (Printexc.to_string exn))])
 			    end
 			    | ("add_replica", _) -> begin
 				  try_lwt
@@ -233,9 +233,9 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
 				    Jitsu.add_replica t ~name:vm_name
 				    >> return (Rpc.Enum [(Rpc.Bool true)])
 				  with exn ->
-				    Printf.printf "start_vm: %s\n%!"  (Printexc.to_string exn);
+				    Printf.printf "add_replica: %s\n%!"  (Printexc.to_string exn);
 				    return (Rpc.Enum [(Rpc.Bool false);
-						  Rpc.String (Printf.sprintf "start_vm: %s\n%!"  (Printexc.to_string exn))])
+						  Rpc.String (Printf.sprintf "add_replica: %s\n%!"  (Printexc.to_string exn))])
 			    end
 			    | (_, _) ->
 				  let _ = Printf.printf "invalid command %s\n%!" (req.Rpc.name) in 
