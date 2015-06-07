@@ -115,10 +115,10 @@ module Make (Backend : Backends.VM_BACKEND) = struct
         let mac = Macaddr.to_string m in
         if mac = vm_name then
           return (Sys.command
-            (Printf.sprintf "ovs.sh del_replica_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid))
+            (Printf.sprintf "../scripts/ovs.sh del_replica_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid))
         else
           return (Sys.command
-            (Printf.sprintf "ovs.sh del_app_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid))
+            (Printf.sprintf "../scripts/ovs.sh del_app_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid))
       | None -> return 0
     in
     get_vm_state t vm >>= fun vm_state ->
@@ -165,9 +165,9 @@ module Make (Backend : Backends.VM_BACKEND) = struct
             let mac = Macaddr.to_string m in
             let _ = match first with
               | true -> Sys.command
-                (Printf.sprintf "ovs.sh add_app_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
+                (Printf.sprintf "../scripts/ovs.sh add_app_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
               | false -> Sys.command
-                (Printf.sprintf "ovs.sh add_replica_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
+                (Printf.sprintf "../scripts/ovs.sh add_replica_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
             in
           (* configure synjitsu *)
             match t.synjitsu with
