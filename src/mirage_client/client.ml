@@ -58,6 +58,10 @@ module Main (C:CONSOLE)(COM:STACKV4) = struct
              let _ = check_cmd_args Sys.argv.(1) 0 in
                [ Rpc.String Sys.argv.(2);
                ]
+        | "del_replica" -> 
+             let _ = check_cmd_args Sys.argv.(1) 0 in
+               [ Rpc.String Sys.argv.(2);
+               ]
         | _ -> 
             failwith (sprintf "Fail: unknown cmd: %s\n%!" Sys.argv.(1))
       in

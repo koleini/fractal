@@ -135,38 +135,6 @@ let backend =
                           ("libxl", `Libxl);
                           ("xapi", `Xapi)])
          `Libvirt & info ["x" ; "backend" ] ~docv:"BACKEND" ~doc)
-(*
-let rpc_server t (module B:Backends.VM_BACKEND) =
-  let c_function (ic, oc) =
-    Lwt.ignore_result (
-      lwt read = Lwt_io.read_line ic in
-      let req = Jsonrpc.call_of_string read in
-      lwt success =
-      let params = req.Rpc.params in
-      match (req.Rpc.name, params) with
-      | ("define_vm", _) -> begin
-        try_lwt
-          let vm_name = Rpc.string_of_rpc (List.nth params 0) in
-          let mac = Rpc.string_of_rpc (List.nth params 1) in
-          let kernel = Rpc.string_of_rpc (List.nth params 2) in
-          B.define_vm t ~name_label:vm_name ~mAC:mac ~pV_kernel:kernel
-          >> return (Rpc.Enum [(Rpc.Bool true)])
-        with exn ->
-          Printf.printf "start_vm: %s\n%!"  (Printexc.to_string exn);
-          return (Rpc.Enum [(Rpc.Bool false);
-                    Rpc.String (Printf.sprintf "start_vm: %s\n%!"  (Printexc.to_string exn))])
-      end
-      | (_, _) ->
-        let _ = Printf.printf "invalid command %s\n%!" (req.Rpc.name) in 
-        return (Rpc.Enum [(Rpc.Bool false)])
-      in
-        let resp = Jsonrpc.string_of_response (Rpc.success success) in
-        Lwt_io.write_line oc resp
-    )
-  in
-    let sockaddr = Unix.ADDR_INET(Unix.inet_addr_any, 5005) in
-    Lwt_io.establish_server sockaddr c_function
-*)
 
 let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay 
     map_domain ttl vm_stop_mode use_synjitsu =
@@ -206,51 +174,60 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
          
        let t = or_abort (fun () -> Jitsu.create backend_t log forward_resolver ~use_synjitsu ()) in
       
-       (* rpc_server backend_t (module B); *)
-      let rpc_server () =
-		    let c_function (ic, oc) =
-			  Lwt.ignore_result (
-			    lwt read = Lwt_io.read_line ic in
-			    let req = Jsonrpc.call_of_string read in
-			    lwt success =
-			    let params = req.Rpc.params in
-			    match (req.Rpc.name, params) with
-			    | ("define_vm", _) -> begin
-				  try_lwt
-				    let vm_name = Rpc.string_of_rpc (List.nth params 0) in
-				    let mac = Rpc.string_of_rpc (List.nth params 1) in
-				    let kernel = Rpc.string_of_rpc (List.nth params 2) in
-				    B.define_vm backend_t ~name_label:vm_name ~mAC:mac ~pV_kernel:kernel
-				    >> return (Rpc.Enum [(Rpc.Bool true)])
-				  with exn ->
-				    Printf.printf "define_vm: %s\n%!"  (Printexc.to_string exn);
-				    return (Rpc.Enum [(Rpc.Bool false);
-						  	Rpc.String (Printf.sprintf "define_vm: %s\n%!"  (Printexc.to_string exn))])
-			    end
-			    | ("add_replica", _) -> begin
-				  try_lwt
-				    let vm_name = Rpc.string_of_rpc (List.nth params 0) in
-				    Jitsu.add_replica t ~name:vm_name
-				    >> return (Rpc.Enum [(Rpc.Bool true)])
-				  with exn ->
-				    Printf.printf "add_replica: %s\n%!"  (Printexc.to_string exn);
-				    return (Rpc.Enum [(Rpc.Bool false);
-						  Rpc.String (Printf.sprintf "add_replica: %s\n%!"  (Printexc.to_string exn))])
-			    end
-			    | (_, _) ->
-				  let _ = Printf.printf "invalid command %s\n%!" (req.Rpc.name) in 
-				  return (Rpc.Enum [(Rpc.Bool false)])
-			    in
-				  let resp = Jsonrpc.string_of_response (Rpc.success success) in
-				  Lwt_io.write_line oc resp
-		    )
-		    in
-			  let sockaddr = Unix.ADDR_INET(Unix.inet_addr_any, rpc_port) in
-			  Lwt_io.establish_server sockaddr c_function
-        in
-           rpc_server ();
-      
-       Lwt.choose [(
+        let rpc_server () =
+		      let c_function (ic, oc) =
+			    Lwt.ignore_result (
+			      lwt read = Lwt_io.read_line ic in
+			      let req = Jsonrpc.call_of_string read in
+			      lwt success =
+			      let params = req.Rpc.params in
+			      match (req.Rpc.name, params) with
+			      | ("define_vm", _) -> begin
+				      try_lwt
+				        let vm_name = Rpc.string_of_rpc (List.nth params 0) in
+				        let mac = Rpc.string_of_rpc (List.nth params 1) in
+				        let kernel = Rpc.string_of_rpc (List.nth params 2) in
+				        B.define_vm backend_t ~name_label:vm_name ~mAC:mac ~pV_kernel:kernel
+				        >> return (Rpc.Enum [(Rpc.Bool true)])
+				      with exn ->
+				        Printf.printf "define_vm: %s\n%!"  (Printexc.to_string exn);
+				        return (Rpc.Enum [(Rpc.Bool false);
+						  	  Rpc.String (Printf.sprintf "define_vm: %s\n%!"  (Printexc.to_string exn))])
+			      end
+			      | ("add_replica", _) -> begin
+				      try_lwt
+				        let vm_name = Rpc.string_of_rpc (List.nth params 0) in
+				        Jitsu.add_replica t ~name:vm_name
+				        >> return (Rpc.Enum [(Rpc.Bool true)])
+				      with exn ->
+				        Printf.printf "add_replica: %s\n%!"  (Printexc.to_string exn);
+				        return (Rpc.Enum [(Rpc.Bool false);
+						      Rpc.String (Printf.sprintf "add_replica: %s\n%!"  (Printexc.to_string exn))])
+			      end
+			      | ("del_replica", _) -> begin
+				      try_lwt
+				        let vm_name = Rpc.string_of_rpc (List.nth params 0) in
+				        Jitsu.del_replica t ~name:vm_name
+				        >> return (Rpc.Enum [(Rpc.Bool true)])
+				      with exn ->
+				        Printf.printf "del_replica: %s\n%!"  (Printexc.to_string exn);
+				        return (Rpc.Enum [(Rpc.Bool false);
+						      Rpc.String (Printf.sprintf "del_replica: %s\n%!"  (Printexc.to_string exn))])
+			      end
+			      | (_, _) ->
+				      let _ = Printf.printf "invalid command %s\n%!" (req.Rpc.name) in 
+				        return (Rpc.Enum [(Rpc.Bool false)])
+			      in
+				      let resp = Jsonrpc.string_of_response (Rpc.success success) in
+				      Lwt_io.write_line oc resp
+		      )
+		      in
+			      let sockaddr = Unix.ADDR_INET(Unix.inet_addr_any, rpc_port) in
+			        Lwt_io.establish_server sockaddr c_function
+            in
+              rpc_server ();
+
+      Lwt.choose [(
            (* main thread, DNS server *)
            let triple (dns,ip,name) =
              log (Printf.sprintf "Adding domain '%s' for VM '%s' with ip %s\n" dns name ip);

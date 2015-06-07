@@ -48,7 +48,10 @@ module Make :
     (** [add_replica t name adds a replica for the VM denoted by name to be
         monitored by jitsu.  FIXME. *)
 
-    val stop_expired_vms: t -> unit Lwt.t
+    val del_replica: t -> name:string -> unit Lwt.t
+    (** [del_replica t name deletes a replica m.  FIXME. *)
+
+        val stop_expired_vms: t -> unit Lwt.t
     (** Iterate through the internal VM table and stop VMs that haven't
         received requests for more than [ttl*2] seconds. *)
   end

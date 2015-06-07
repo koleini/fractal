@@ -107,6 +107,20 @@ module Make (Backend : Backends.VM_BACKEND) = struct
 
   let stop_vm t vm =
     get_vm_name t vm >>= fun vm_name ->
+    or_backend_error "Unable to get MAC for VM" (Backend.get_mac t.backend) vm.vm >>= fun vm_mac ->
+    lwt _ = match vm_mac with
+      | Some m ->
+        (* configure open vswitch *)
+        lwt domid = or_backend_error "Unable to get domain id for VM" (Backend.get_domain_id t.backend) vm.vm in
+        let mac = Macaddr.to_string m in
+        if mac = vm_name then
+          return (Sys.command
+            (Printf.sprintf "ovs.sh del_replica_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid))
+        else
+          return (Sys.command
+            (Printf.sprintf "ovs.sh del_app_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid))
+      | None -> return 0
+    in
     get_vm_state t vm >>= fun vm_state ->
     match vm_state with
     | Backends.VmInfoRunning ->
@@ -151,9 +165,9 @@ module Make (Backend : Backends.VM_BACKEND) = struct
             let mac = Macaddr.to_string m in
             let _ = match first with
               | true -> Sys.command
-                (Printf.sprintf "../scripts/ovs.sh add_app_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
+                (Printf.sprintf "ovs.sh add_app_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
               | false -> Sys.command
-                (Printf.sprintf "../scripts/ovs.sh add_replica_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
+                (Printf.sprintf "ovs.sh add_replica_of13.sh 1 %s %s %d" (Ipaddr.V4.to_string vm.ip) mac domid)
             in
           (* configure synjitsu *)
             match t.synjitsu with
@@ -345,7 +359,8 @@ module Make (Backend : Backends.VM_BACKEND) = struct
     start_vm t record false >>
     return_unit
     
-  let del_replica t ~name:vm_name =
+  let del_replica t ~name:vm_name = (* name is a mac address *)
+    t.log (red "deleting vm....\n");
     or_backend_error "Unable to lookup VM by name" (Backend.lookup_vm_by_name t.backend) vm_name >>= fun _ ->
     match get_vm_metadata_by_name t vm_name with
       | None -> Lwt.return (t.log (Printf.sprintf "%s: No record found.\n" vm_name))
