@@ -1,0 +1,2 @@
+BRIDGE=xenbr0
+EXT_PORT=1
