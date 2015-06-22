@@ -1,30 +1,33 @@
 #!/usr/bin/env bash
 set -ex
 
-# accepted input params:
-#  app_id, first vm IP, first vm MAC, first vm dom_id/uuid for xenserver 6.5/6.6.
+# accepted input params: app_id, replica IP, replica MAC, initial replica domid,
+# initial xen host, replica xen host
 
 source params.sh
 
 # TODO need to check argument number and fail if the number is incorrect
 
-APP_ID=$1
-IP=$2
-MAC=$3
-UUID=$4
+LOCAL_XEN=$5
+REMOTE_XEN=$6
 
-# extract port number when $4 is uuid (xenserver >= 6.6)
-#vif=$(xenstore-ls /xapi/$UUID/hotplug | sed -n 4p | sed 's/.*vif.*=.*\(vif.*\)\"/\1/')
-#port_id=$(ovs-ofctl show $BRIDGE | grep $vif | sed 's/\s*\([0-9][0-9]*\)(.*/\1/')
+if [ "$LOCAL_XEN" == "$REMOTE_XEN" ]; then
+    port_id=`sudo ovs-ofctl dump-ports tcp:$LOCAL_XEN:6633 vif$4.0  | head -2 | tail -1 | awk '{print $2}' | tr -d \:`
+    new_group=`ovs-ofctl -OOpenFlow13 dump-groups tcp:$LOCAL_XEN:6633 group_id=$1 | grep "group_id=$1," | \
+        sed -e "s/bucket=weight:50,actions=set_field:$2->ip_dst,set_field:$3->eth_dst,output:$port_id/bucket=weight:0,actions=mod_nw_dst:$2,mod_dl_dst:$3,output:$port_id/g" |\
+        sed -e "s/set_field:\([0-9a-z:]*\)->eth_dst/mod_dl_dst:\1/g" \
+        -e "s/set_field:\([0-9\.]*\)->ip_dst/mod_nw_dst:\1/g" \
+        -e "s/output:\([0-9]*\)/output:\1/g"`
+else
+    crc=`echo $REMOTE_XEN | cksum | cut -d \  -f 1`
+    TUNNEL_NAME=gre$1`printf "%x" $crc`$4
+    local_port_id=`sudo ovs-ofctl dump-ports tcp:$LOCAL_XEN:6633 $TUNNEL_NAME  | \
+        grep rx | awk '{print $2}' | tr -d \:`
+    new_group=`ovs-ofctl -OOpenFlow13 dump-groups tcp:$LOCAL_XEN:6633 group_id=$1 | grep "group_id=$1," | \
+        sed -e "s/bucket=weight:50,actions=output:$local_port_id/bucket=weight:0,output:$local_port_id/g" |\
+        sed -e "s/set_field:\([0-9a-z:]*\)->eth_dst/mod_dl_dst:\1/g" \
+        -e "s/set_field:\([0-9\.]*\)->ip_dst/mod_nw_dst:\1/g" \
+        -e "s/output:\([0-9]*\)/output:\1/g"`
+fi
 
-#TODO if we get dom_id eventually, this the env var to use to discover the port
-port_id=`ovs-ofctl dump-ports $BRIDGE vif$UUID.0  | head -2 | tail -1 | awk '{print $2}' | tr -d \:`
-
-new_group=`ovs-ofctl -OOpenFlow13 dump-groups $BRIDGE group_id=$APP_ID | grep "group_id" | \
-sed -e "s/bucket=weight:50,actions=set_field:$IP->ip_dst,set_field:$MAC->eth_dst,output:$port_id/bucket=weight:0,mod_nw_dst:$IP,mod_dl_dst:$MAC,output:$port_id/g" |\
-sed -e "s/set_field:\([0-9a-z:]*\)->eth_dst/mod_dl_dst:\1/g" \
-    -e "s/set_field:\([0-9\.]*\)->ip_dst/mod_nw_dst:\1/g" \
-    -e "s/actions=//g" \
-    -e "s/output:\([0-9]*\)/output:\1/g"`
-
-ovs-ofctl -OOpenFlow13 mod-group $BRIDGE $new_group
+ovs-ofctl -OOpenFlow13 mod-group tcp:$LOCAL_XEN:6633 $new_group
