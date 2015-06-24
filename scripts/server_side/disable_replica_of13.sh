@@ -19,8 +19,8 @@ if [ "$LOCAL_XEN" == "$REMOTE_XEN" ]; then
         -e "s/set_field:\([0-9\.]*\)->ip_dst/mod_nw_dst:\1/g" \
         -e "s/output:\([0-9]*\)/output:\1/g"`
 else
-    crc=`echo $REMOTE_XEN | cksum | cut -d \  -f 1`
-    TUNNEL_NAME=gre$1`printf "%x" $crc`$4
+    crc=`echo $1.$REMOTE_XEN.$4 | cksum | cut -d \  -f 1`
+    TUNNEL_NAME=gre`printf "%x" $crc`
     local_port_id=`sudo ovs-ofctl dump-ports tcp:$LOCAL_XEN:6633 $TUNNEL_NAME  | \
         grep rx | awk '{print $2}' | tr -d \:`
     new_group=`ovs-ofctl -OOpenFlow13 dump-groups tcp:$LOCAL_XEN:6633 group_id=$1 | grep "group_id=$1," | \

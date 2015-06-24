@@ -42,8 +42,8 @@ else
     # add a gre tunnel between the two end-points
     # TODO: is this gre key unique? Is the uniqueness required for a pair of hosts, or between all tunnel?
 #    TUNNEL_NAME=gre.$1.$REMOTE_XEN.$4
-    crc=`echo $REMOTE_XEN | cksum | cut -d \  -f 1`
-    TUNNEL_NAME=gre$1`printf "%x" $crc`$4
+    crc=`echo $1.$REMOTE_XEN.$4 | cksum | cut -d \  -f 1`
+    TUNNEL_NAME=gre`printf "%x" $crc`
     ovs-vsctl --db=tcp:$REMOTE_XEN:6634 add-port $BRIDGE $TUNNEL_NAME -- \
         set interface $TUNNEL_NAME type=gre options:remote_ip=$LOCAL_XEN options:key=$port_id
     ovs-vsctl --db=tcp:$LOCAL_XEN:6634 add-port $BRIDGE $TUNNEL_NAME -- \
