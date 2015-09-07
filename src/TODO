@@ -4,3 +4,6 @@ TODO:
 1. application number is hardcoded!
 1. Jitsu assumes one interface per vm
 2. When DNS query arrives, no error arises if name is not defined
+3. what happens when the original vm is shutdown?
+4. What happens if we have already shutdown vms? We can reuse them instead of defining new vms, or delete sgutdown replicas (second loosk better)
+5. openvswitch controller port is not that reliable. Sometimes it is not possible for the script to connect, and just waits. Restarting openvswitch sevice helps

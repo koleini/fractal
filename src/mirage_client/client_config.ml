@@ -25,7 +25,7 @@ let stack =
 
 let () =
   add_to_ocamlfind_libraries
-    ( [ "rpclib" ] );
+    ( [ "rpclib"; "irmin.unix" ; "irmin.http"; "dns"] );
   register "client" [
     handler $ default_console $ stack ;
   ]

@@ -36,13 +36,13 @@ let connect connstr =
 
 (* convert vm state to string *)
 let libvirt_state_to_vm_state = function
-  | Libvirt.Domain.InfoNoState -> Backends.VmInfoNoState
-  | Libvirt.Domain.InfoRunning -> Backends.VmInfoRunning
-  | Libvirt.Domain.InfoBlocked -> Backends.VmInfoBlocked
-  | Libvirt.Domain.InfoPaused -> Backends.VmInfoPaused
-  | Libvirt.Domain.InfoShutdown -> Backends.VmInfoShutdown
-  | Libvirt.Domain.InfoShutoff -> Backends.VmInfoShutoff
-  | Libvirt.Domain.InfoCrashed -> Backends.VmInfoCrashed
+  | Libvirt.Domain.InfoNoState 
+  | Libvirt.Domain.InfoBlocked 
+  | Libvirt.Domain.InfoCrashed -> Vm_state.Unknown
+  | Libvirt.Domain.InfoRunning -> Vm_state.Running
+  | Libvirt.Domain.InfoPaused -> Vm_state.Paused
+  | Libvirt.Domain.InfoShutdown 
+  | Libvirt.Domain.InfoShutoff -> Vm_state.Off
 
 let define_vm _t ~name_label:_ ~mAC:_ ~pV_kernel:_ =
   Lwt.return (`Error (`Unknown "Under construction: devine_vm is not implemented for libvirt."))
@@ -72,7 +72,7 @@ let get_state t vm =
 let get_kernel t vm = (* TODO *)
   try_libvirt "Unable to get VM kernel" (fun () -> 
       let _domain = Libvirt.Domain.lookup_by_uuid t.connection vm.uuid in
-      ""
+      Uri.empty
     )
 
 let destroy_vm t vm =

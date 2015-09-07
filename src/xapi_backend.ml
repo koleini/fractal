@@ -34,7 +34,7 @@ let try_xapi msg f =
     Lwt.return (`Ok result)
   with
   | e -> Lwt.return (`Error (`Unknown (Printf.sprintf "%s: %s" msg (Printexc.to_string e))))
-
+ 
 let define_vm t ~name_label ~mAC ~pV_kernel =
   try_xapi "Unable to define vm" (fun () -> 
     let (rpc, session_id) = t.connection in
@@ -47,7 +47,7 @@ let define_vm t ~name_label ~mAC ~pV_kernel =
 	  ~memory_dynamic_min:134217728L ~memory_static_min:134217728L
 	  ~vCPUs_params:[] ~vCPUs_max:1L ~vCPUs_at_startup:1L
 	  ~actions_after_shutdown:`destroy ~actions_after_reboot:`restart ~actions_after_crash:`restart
-	  ~pV_bootloader:"" ~pV_kernel ~pV_ramdisk:"" ~pV_args:""
+	  ~pV_bootloader:"" ~pV_kernel:(Uri.to_string pV_kernel) ~pV_ramdisk:"" ~pV_args:""
 	  ~pV_bootloader_args:"" ~pV_legacy_args:""
 	  ~hVM_boot_policy:"" ~hVM_boot_params:[] ~hVM_shadow_multiplier:1.0
 	  ~platform:[]
@@ -61,11 +61,14 @@ let define_vm t ~name_label ~mAC ~pV_kernel =
 	  ~protection_policy:"OpaqueRef:NULL"
 	  ~is_snapshot_from_vmpp:false
 	  ~appliance:"OpaqueRef:NULL"
-	  ~start_delay:0L ~shutdown_delay:0L ~order:0L ~suspend_SR:"OpaqueRef:NULL" ~version:0L in
+	  ~start_delay:0L ~shutdown_delay:0L ~order:0L ~suspend_SR:"OpaqueRef:NULL" ~version:0L
+    ~generation_id:"" 
+    ~hardware_platform_version:0L
+    in
     lwt net = Network.get_by_name_label ~rpc:rpc ~session_id:session_id
-                ~label:"Pool-wide network associated with eth0" in
+                ~label:"experiment" (* "Pool-wide network associated with eth0" *) in
     lwt _vif = VIF.create ~rpc:rpc ~session_id:session_id
-      ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC ~mTU:0L
+      ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC:(Macaddr.to_string mAC) ~mTU:0L
       ~other_config:[] ~qos_algorithm_type:"" ~qos_algorithm_params:[]  ~locking_mode:`network_default
 	  ~ipv4_allowed:[] ~ipv6_allowed:[] in
     lwt uuid = VM.get_uuid ~rpc:rpc ~session_id:session_id ~self:vm in
@@ -79,18 +82,25 @@ let connect connstr =
       let host = match Uri.host uri with | Some h -> h | None -> "127.0.0.1" in
       let user = match Uri.user uri with | Some u -> u | None -> "root" in
       let pass = match Uri.password uri with | Some h -> h | None -> "" in
-      let rpc = if !json then make_json (schm ^ "://" ^ host) else make (schm ^ "://" ^ host) in
+      let port = match Uri.port uri with | Some h -> string_of_int h | None -> "80" in
+      let rpc = if !json then make_json (schm ^ "://" ^ host ^ ":" ^ port) else make (schm ^ "://" ^ host ^ ":" ^ port) in
       (* Printf.printf "%s %s %s %s\n" schm host user pass; *)
-      lwt session_id = Session.login_with_password rpc user pass "1.0" in
+      lwt session_id = Session.login_with_password ~rpc:rpc ~uname:user ~pwd:pass ~version:"1.0" ~originator:"jitsu" in
       Lwt.return { connection = (rpc, session_id) }
+    )
+
+let disconnect t =
+  try_xapi "Unable to disconnect" (fun () ->
+    let (rpc, session_id) = t.connection in
+    Session.logout ~rpc:rpc ~session_id:session_id
     )
 
 (* convert vm state to string *)
 let xapi_state_to_vm_state = function
-  | `Running -> Backends.VmInfoRunning
-  | `Paused -> Backends.VmInfoPaused
-  | `Halted -> Backends.VmInfoShutdown
-  | `Suspended -> Backends.VmInfoSuspended
+  | `Running -> Vm_state.Running
+  | `Paused  -> Vm_state.Paused
+  | `Halted  -> Vm_state.Off
+  | _ -> Vm_state.Unknown
 
 let lookup_vm_by_uuid t vm_uuid =
   (* We use UUID for internal representation, but call lookup anyway to make sure it exists *)
@@ -123,7 +133,8 @@ let get_kernel t vm =
   try_xapi "Unable to get VM kernel" (fun () -> 
     let (rpc, session_id) = t.connection in
     lwt domain = VM.get_by_uuid ~rpc:rpc ~session_id:session_id ~uuid:vm.uuid in
-    VM.get_PV_kernel ~rpc:rpc ~session_id:session_id ~self:domain
+    VM.get_PV_kernel ~rpc:rpc ~session_id:session_id ~self:domain >>= fun k ->
+    return (Uri.of_string k)
   )
 
 let destroy_vm t vm =

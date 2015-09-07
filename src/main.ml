@@ -13,11 +13,14 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
-
+ 
 open Lwt
 open Cmdliner
+open Irmin_unix
 
-let rpc_port = 5005
+module Store = Irmin.Basic (Irmin_http.Make) (Irmin.Contents.String)
+module Lock = Irmin.Private.Lock.Make(Store.Tag)
+module View = Irmin.View (Store)
 
 let info =
   let doc =
@@ -98,10 +101,10 @@ let vm_stop_mode =
      $(b,destroy) and $(b,shutdown). Suspended VMs are generally faster to \
      resume, but require resources to store state. Note that Mirage \
      suspend/resume is currently not supported on ARM." in
-  Arg.(value & opt (enum [("destroy" , Backends.VmStopDestroy);
-                          ("suspend" , Backends.VmStopSuspend);
-                          ("shutdown", Backends.VmStopShutdown)])
-         Backends.VmStopSuspend & info ["m" ; "mode" ] ~docv:"MODE" ~doc)
+  Arg.(value & opt (enum [("destroy" , Vm_stop_mode.Destroy);
+                          ("suspend" , Vm_stop_mode.Suspend);
+                          ("shutdown", Vm_stop_mode.Shutdown)])
+         Vm_stop_mode.Shutdown & info ["m" ; "mode" ] ~docv:"MODE" ~doc)
 
 let synjitsu_domain_uuid =
   let doc =
@@ -114,7 +117,7 @@ let synjitsu_domain_uuid =
   Arg.(value & opt (some string) None & info ["synjitsu"] ~docv:"NAME_OR_UUID" ~doc)
 
 let log m =
-  Printf.fprintf stdout "%s%!" m
+  print_endline (Printf.sprintf "\027[36m %s\027[m%!" m)
 
 let or_abort f =
   try f () with
@@ -142,17 +145,11 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
       if backend = `Libvirt then 
           (module Libvirt_backend : Backends.VM_BACKEND) 
       else if backend = `Xapi then
-          (module Xapi_backend : Backends.VM_BACKEND) 
+          (module Xapi_backend : Backends.VM_BACKEND)
       else
       (module Libvirt_backend) 
   in
   let module Jitsu = Jitsu.Make(B) in
-  let rec maintenance_thread t timeout =
-    Lwt_unix.sleep timeout >>= fun () ->
-    log ".";
-    or_warn_lwt "Unable to stop expired VMs" (fun () -> Jitsu.stop_expired_vms t) >>= fun () ->
-    maintenance_thread t timeout;
-  in
   Lwt_main.run (
     ((match forwarder with
         | "" -> Dns_resolver_unix.create () >>= fun r -> (* use resolv.conf *)
@@ -171,69 +168,99 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
      match r with
      | `Error _ -> raise (Failure "Unable to connect to backend") 
      | `Ok backend_t ->
-         
-       let t = or_abort (fun () -> Jitsu.create backend_t log forward_resolver ~use_synjitsu ()) in
-      
-        let rpc_server () =
-		      let c_function (ic, oc) =
-			    Lwt.ignore_result (
-			      lwt read = Lwt_io.read_line ic in
-			      let req = Jsonrpc.call_of_string read in
-			      lwt success =
-			      let params = req.Rpc.params in
-			      match (req.Rpc.name, params) with
-			      | ("define_vm", _) -> begin
-				      try_lwt
-				        let vm_name = Rpc.string_of_rpc (List.nth params 0) in
-				        let mac = Rpc.string_of_rpc (List.nth params 1) in
-				        let kernel = Rpc.string_of_rpc (List.nth params 2) in
-				        B.define_vm backend_t ~name_label:vm_name ~mAC:mac ~pV_kernel:kernel
-				        >> return (Rpc.Enum [(Rpc.Bool true)])
-				      with exn ->
-				        Printf.printf "define_vm: %s\n%!"  (Printexc.to_string exn);
-				        return (Rpc.Enum [(Rpc.Bool false);
-						  	  Rpc.String (Printf.sprintf "define_vm: %s\n%!"  (Printexc.to_string exn))])
-			      end
-			      | ("add_replica", _) -> begin
-				      try_lwt
-				        let vm_name = Rpc.string_of_rpc (List.nth params 0) in
-				        Jitsu.add_replica t ~name:vm_name
-				        >> return (Rpc.Enum [(Rpc.Bool true)])
-				      with exn ->
-				        Printf.printf "add_replica: %s\n%!"  (Printexc.to_string exn);
-				        return (Rpc.Enum [(Rpc.Bool false);
-						      Rpc.String (Printf.sprintf "add_replica: %s\n%!"  (Printexc.to_string exn))])
-			      end
-			      | ("del_replica", _) -> begin
-				      try_lwt
-				        let vm_name = Rpc.string_of_rpc (List.nth params 0) in
-				        Jitsu.del_replica t ~name:vm_name
-				        >> return (Rpc.Enum [(Rpc.Bool true)])
-				      with exn ->
-				        Printf.printf "del_replica: %s\n%!"  (Printexc.to_string exn);
-				        return (Rpc.Enum [(Rpc.Bool false);
-						      Rpc.String (Printf.sprintf "del_replica: %s\n%!"  (Printexc.to_string exn))])
-			      end
-			      | (_, _) ->
-				      let _ = Printf.printf "invalid command %s\n%!" (req.Rpc.name) in 
-				        return (Rpc.Enum [(Rpc.Bool false)])
-			      in
-				      let resp = Jsonrpc.string_of_response (Rpc.success success) in
-				      Lwt_io.write_line oc resp
-		      )
-		      in
-			      let sockaddr = Unix.ADDR_INET(Unix.inet_addr_any, rpc_port) in
-			        Lwt_io.establish_server sockaddr c_function
-            in
-              rpc_server ();
 
-      Lwt.choose [(
-           (* main thread, DNS server *)
-           let triple (dns,ip,name) =
-             log (Printf.sprintf "Adding domain '%s' for VM '%s' with ip %s\n" dns name ip);
-             or_abort (fun () -> Jitsu.add_vm t ~domain:dns ~name (Ipaddr.V4.of_string_exn ip) vm_stop_mode ~delay:response_delay ~ttl)
+       let rec maintenance_thread t timeout =
+         Lwt_unix.sleep timeout >>= fun () ->
+         or_warn_lwt "Unable to stop expired VMs" (fun () -> Jitsu.stop_expired_vms t) >>= fun () ->
+         maintenance_thread t timeout;
+       in
+
+       or_abort (fun () -> Jitsu.create backend_t log forward_resolver ~use_synjitsu ()) >>= fun t ->
+      
+       let watch_remote_hosts ~storage ~host:_r_host diff =
+         let process_response () =
+           log "xen response detected";
+           Irmin_backend.get_response storage ~vm_name:Config.l_host.Config.name >>= function
+            | Rpc.Enum response when response <> [] ->
+              (* read response params *)
+              return ()
+            | _ -> (* raise (Failure "Empty or non well-formed response") *)
+              return ()
+         in
+         match diff with
+         | `Added _  | `Updated _ -> process_response ()
+         | `Removed _ -> return ()
+       in
+       let process_tags config _tag diff =
+        
+         let process_command key value =
+           match (List.nth key 1) with
+           | "action" -> begin 
+             let vm_name  = List.nth key 0 in
+             match Config.rpc_of_string value with
+             | Rpc.Enum action when action <> [] ->
+			         let params = List.tl action in begin
+			         match Rpc.string_of_rpc (List.hd action) with
+			         | "add_vm" -> Jitsu.add_replica t ~vm_name ~params
+               | "del_vm" -> Jitsu.del_replica t ~vm_name ~params
+               | "def_vm" ->
+                 let kernel  = Uri.of_string (Rpc.string_of_rpc (List.nth params 0)) in
+                 let mac = Macaddr.of_string_exn (Rpc.string_of_rpc (List.nth params 1)) in
+			           B.define_vm backend_t ~name_label:vm_name ~mAC:mac ~pV_kernel:kernel >>=
+                 fun _ -> return ()
+               | act ->
+                 return (log (Printf.sprintf "requested action (%s) is not valid" act))
+               end
+             | _ -> raise (Failure (Printf.sprintf "Empty or non well-formed request: %s\n" value))
+           end
+           | _ -> return (log (Printf.sprintf "key: %s added: %s" (String.concat "/" key) value))
+         in
+         let process_diff view_p h =
+           lwt s = Store.of_head config task h in
+           lwt view = View.of_path (s "of-path views") ["jitsu"; "request";] in
+           View.diff view_p view >>= fun views ->
+           let _ =
+           Lwt_list.iter_s (fun (k, v) ->
+             match v with
+             | `Added v -> process_command k v
+             | `Updated (_, v) -> process_command k v
+             | `Removed v -> return (log (Printf.sprintf "key: %s removed: %s" (String.concat " " k) v))
+             ) views
            in
-           Lwt_list.iter_p triple map_domain
+             return ()
+          in 
+          match diff with
+          | `Added h ->
+              lwt view_p = View.empty () in
+              process_diff view_p h
+          | `Updated (h1, h2) -> 
+              lwt s = Store.of_head config task h1 in
+              lwt view_p = View.of_path (s "of-path views") ["jitsu"; "request";] in
+              process_diff view_p h2
+          | `Removed _ -> return (log "keys removed")
+       in
+       let storage = Jitsu.get_storage t in
+       let ir_conn = Irmin_backend.get_irmin_conn storage in
+       Lwt_list.iter_s (fun h ->
+         Irmin_backend.create ~address:h.Config.irmin_store () >>= fun s ->
+         let ir_conn = Irmin_backend.get_irmin_conn s in
+         let path = [ "jitsu" ; "request"; Config.l_host.Config.name; "response"; ] in
+         Irmin.update (ir_conn "Add response") path "[]" >>
+         Irmin.watch_key (ir_conn "jitsu") path
+           (watch_remote_hosts ~storage:s ~host:h) >>= fun _ ->
+             return ()
+         ) Config.r_hosts >>
+         Irmin.watch_tags (ir_conn "jitsu")
+           (process_tags (Irmin_http.config Config.l_host.Config.irmin_store)) >>= fun _ ->   
+
+       Lwt.choose [(
+           (* main thread, DNS server *)
+           let add (dns_name,vm_ip,vm_name) =
+             log (Printf.sprintf "Adding domain '%s' for VM '%s' with ip %s\n" dns_name vm_name vm_ip);
+             or_abort (fun () -> Jitsu.add_vm t ~dns_names:[Dns.Name.of_string dns_name] ~vm_name
+                 ~vm_ip:(Ipaddr.V4.of_string_exn vm_ip) ~vm_stop_mode ~response_delay ~dns_ttl:ttl)
+           in
+           Lwt_list.iter_p add map_domain
            >>= fun () ->
            log (Printf.sprintf "Starting server on %s:%d...\n" bindaddr bindport);
            let processor = ((Dns_server.processor_of_process (Jitsu.process t))
@@ -241,7 +268,7 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
            Dns_server_unix.serve_with_processor ~address:bindaddr ~port:bindport
              ~processor);
           (* maintenance thread, delay in seconds *)
-          (maintenance_thread t 5.0);
+          (* (maintenance_thread t 10.0); *)
           ]);
   )
 

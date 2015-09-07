@@ -13,21 +13,22 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- *)
-
+ *) 
+ 
 open Lwt
-open V1_LWT
-open Printf
+open V1_LWT 
+open Printf 
+open Irmin_unix 
 
 let red fmt    = sprintf ("\027[31m"^^fmt^^"\027[m")
 let green fmt  = sprintf ("\027[32m"^^fmt^^"\027[m")
 let yellow fmt = sprintf ("\027[33m"^^fmt^^"\027[m")
 let blue fmt   = sprintf ("\027[36m"^^fmt^^"\027[m")
-
-exception Connect_error
-
+ 
+exception Connect_error 
+ 
 let dst_ip = "127.0.0.1"
-let dst_port = 5005
+let dst_port = 8080
 
 module Main (C:CONSOLE)(COM:STACKV4) = struct
 
@@ -35,69 +36,54 @@ module Main (C:CONSOLE)(COM:STACKV4) = struct
 
   let start console com =
 
+  Irmin_backend.create ~persist:false ~root:"/tmp/jitsu" ~uri:(Uri.of_string Sys.argv.(2)) () >>= fun storage ->
+
   let check_cmd_args cmd count = 
     if ((Array.length Sys.argv) < (2 + count)) then
       failwith (sprintf "Insufficient args for command %s (required %d)"
                 cmd count)
   in
-  let send_cmd flow =
+  let send_cmd () = 
   try_lwt
     if ((Array.length Sys.argv) < 2) then 
       failwith "No command defined";
-
-    lwt resp =
-      let params =
-        match (Sys.argv.(1)) with
-        | "define_vm" -> 
-             let _ = check_cmd_args Sys.argv.(1) 2 in
-               [ Rpc.String Sys.argv.(2);
-                 Rpc.String Sys.argv.(3);
-                 Rpc.String Sys.argv.(4);
-               ]
-        | "add_replica" -> 
+ 
+    match (Sys.argv.(1)) with
+    (* | "define_vm" -> 
+         let _ = check_cmd_args Sys.argv.(1) 2 in *)
+      | "add_replica" ->
+        let _ = check_cmd_args Sys.argv.(1) 0 in 
+          Irmin_backend.add_replica storage ~vm_name:Sys.argv.(3) ~app_name:Sys.argv.(4) 
+            ~app_id:(int_of_string Sys.argv.(5)) ~vm_stop_mode:(Vm_stop_mode.of_string Sys.argv.(6))
+            ~ttl:(int_of_string Sys.argv.(7)) ~kernel:(if Sys.argv.(8) = "" then Uri.empty else Uri.of_string Sys.argv.(8)) (* (Uri.of_string Sys.argv.(8)) *)
+            
+         (* Irmin_backend.add_replica storage ~vm_name:Sys.argv.(2) ~app_name:Sys.argv.(3) 
+            ~app_id:(int_of_string Sys.argv.(4)) ~vm_stop_mode:(Vm_stop_mode.of_string Sys.argv.(5))
+            ~ttl:(int_of_string Sys.argv.(6)) ~kernel:Uri.empty (* (Uri.of_string Sys.argv.(7)) *)
+        *)
+        (* | "del_replica" ->
              let _ = check_cmd_args Sys.argv.(1) 0 in
                [ Rpc.String Sys.argv.(2);
-               ]
-        | "del_replica" -> 
+               ] *)
+      | "del_replica" ->
+        let _ = check_cmd_args Sys.argv.(1) 0 in
+          Irmin_backend.del_replica storage ~vm_name:Sys.argv.(3) ~app_name:Sys.argv.(4)
+        (* | "del_replica" -> 
              let _ = check_cmd_args Sys.argv.(1) 0 in
                [ Rpc.String Sys.argv.(2);
-               ]
-        | _ -> 
-            failwith (sprintf "Fail: unknown cmd: %s\n%!" Sys.argv.(1))
-      in
-        let cmd = Rpc.({name=Sys.argv.(1); params;}) in 
-        lwt _ = TCOM.write flow (Cstruct.of_string ((Jsonrpc.string_of_call cmd) ^ "\n")) in 
-        TCOM.read flow
-        >>= fun read -> begin
-        match read with
-        | `Ok resp -> let r = Jsonrpc.response_of_string (Cstruct.to_string resp) in
-              return ( "Rpc success: " ^ (string_of_bool r.Rpc.success) ^ "\n" ^
-                       "Rpc contents: " ^
-                       (Rpc.to_string r.Rpc.contents)
-                     )
-         | `Eof -> TCOM.close flow >>
-                     C.log_s console (red "connection closed") >>
-                     return ("connection closed")
-         | `Error e -> C.log_s console (red "read: error") >>
-                     return ("read: error")
-         end
-     in
-     let _ = printf "result:\n%s\n%!" resp in 
-      return () 
+               ] *)
+      | "define_vm" -> 
+        let _ = check_cmd_args Sys.argv.(1) 0 in
+          Irmin_backend.define_vm storage ~vm_name:Sys.argv.(3) ~mac:(Macaddr.of_string_exn Sys.argv.(4)) ~kernel:(Uri.of_string Sys.argv.(5))
+        (* | "del_replica" ->
+             let _ = check_cmd_args Sys.argv.(1) 0 in
+               [ Rpc.String Sys.argv.(2);
+               ] *)
+      | _ -> 
+        failwith (sprintf "Fail: unknown cmd: %s\n%!" Sys.argv.(1))
   with  ex -> 
      return (printf "Fail: %s" (Printexc.to_string ex))
   in
 
-  let connect dst port =
-    COM.TCPV4.create_connection (COM.tcpv4 com) (dst, port) >>= function
-    | `Ok outfl -> C.log_s console (red "connected")
-                   >> return outfl
-    | `Error e -> fail (Failure "failed to connect")
-  in
-  let send f buf =
-    TCOM.write f buf
-  in
-  lwt flow = connect (Ipaddr.V4.of_string_exn dst_ip) dst_port in
-  send_cmd flow >>
-  TCOM.close flow
+  send_cmd ()
 end
