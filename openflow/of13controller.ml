@@ -4,6 +4,8 @@ open OpenFlow0x04
 open OpenFlow0x04.Message
 open OpenFlow0x04_Core
 
+exception Controller_Error
+
 type t ={
     of_istream: Lwt_io.input_channel;
     of_ostream: Lwt_io.output_channel;
@@ -11,6 +13,7 @@ type t ={
     wake : unit Lwt.u;
     of_resp : (int32, Message.t Lwt.u) Hashtbl.t;
     xid_uid : int32 ref;
+    mutable active: bool;
 }
 
 let wait t = t.wait
@@ -26,6 +29,10 @@ let int64_of_macaddr mac =
     !iMac
 
 let send_of_msg c ?xid:(xid=(-1l)) m =
+    let _ = 
+        if not c.active then
+            raise Controller_Error
+    in
     let xid =
         if (xid < 0l) then 
             let _ = c.xid_uid := (Int32.succ !(c.xid_uid)) in
@@ -47,6 +54,11 @@ let send_of_msg_reply c m =
     lwt r = t in
     let _ = Hashtbl.remove c.of_resp xid in
     return r
+
+let send_of_msg_reply_timeout c m delay = 
+    lwt r = (send_of_msg c m) <?> (lwt _ = Lwt_unix.sleep delay in fail_with "msg timeout") in
+    return r
+
 
 let of_proccess_msg c xid = function
     | Hello t -> 
@@ -86,9 +98,24 @@ let of_loop c process_msg =
         lwt _ = process_msg c xid m in 
             loop_inner ()
     in
-    lwt _ = loop_inner () in 
-    return (Lwt.wakeup c.wake ())
+    lwt _ = 
+        try_lwt 
+            loop_inner () 
+        with e ->
+            let _ = Printf.printf "Conection terminated with error: %s\n%!" (Printexc.to_string e) in 
+            return (c.active <- false)
+        in 
+(*    return (Lwt.wakeup c.wake ()) *)
+    return ()
 
+let keepalive_check c = 
+    while_lwt c.active do
+        try_lwt 
+            lwt _ = send_of_msg_reply_timeout c (EchoRequest (Cstruct.create 0)) 1.0 in
+            Lwt_unix.sleep 1.0
+        with _ -> 
+            return (c.active <- false)
+    done
 
 let init_controller ?of_port:(of_port=6634) host = 
     let (wait, wake) = Lwt.wait () in 
@@ -98,12 +125,16 @@ let init_controller ?of_port:(of_port=6634) host =
     let (t,u) = Lwt.wait () in
     let of_resp = Hashtbl.create 64 in
     let _ = Hashtbl.add of_resp 10l u in
-    let c = {of_istream; of_ostream; wait; wake; xid_uid=(ref 0l); of_resp;} in
+    let c = {of_istream; of_ostream; wait; wake; xid_uid=(ref 0l); of_resp; active=true;} in
     lwt _ = send_of_msg c ~xid:10l (Hello []) in
     let _ = Lwt.ignore_result (of_loop c of_proccess_msg) in 
     
     (* wait for the SwitchFeature response, before any interaction *)
     lwt _ = t in
+
+    (* Start thread to check echo responses *)
+    let _ = Lwt.ignore_result (keepalive_check c) in 
+
 
     return c
 
