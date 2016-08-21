@@ -84,6 +84,15 @@ module Make = struct
         | `Error e, _ -> raise (Invalid_config (Printf.sprintf "Error reading UUID: %s" (Options.string_of_error e)))
       )
 
+  let define_vm _ ~name_label:_ ~mAC:_ ~pV_kernel:_ =
+    Lwt.return (`Error (`Unknown "define_vm is not implemented for libvirt."))
+
+  let undefine_vm _t _uuid =
+    Lwt.return (`Error (`Unknown "define_vm is not implemented for libvirt."))
+
+  let get_kernel _ _ =
+    Lwt.return (`Error (`Unknown "get_kernel is not implemented for libvirt."))
+
   let lookup_vm_by_name t name =
     try_libvirt "Unable lookup VM name" (fun () ->
         let domain = Libvirt.Domain.lookup_by_name t.connection name in
@@ -124,6 +133,8 @@ module Make = struct
 
   let unpause_vm t uuid =
     resume_vm t uuid (* suspend/pause is the same in libvirt *)
+
+  let unsuspend_vm t uuid = unpause_vm t uuid
 
   let pause_vm t uuid =
     suspend_vm t uuid (* suspend/pause is the same in libvirt *)

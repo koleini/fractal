@@ -1,5 +1,6 @@
 (*
  * Copyright (c) 2014-2015 Magnus Skjegstad <magnus@skjegstad.com>
+ * Copyright (c) 2014-2016 Masoud Koleini <masoud.koleini@nottingham.ac.uk>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,6 +17,13 @@
 
 open Lwt
 open Cmdliner
+open Irmin_unix
+
+module Store = Irmin_unix.Irmin_http.Make(Irmin.Contents.String)(Irmin.Ref.String)(Irmin.Hash.SHA1)
+module View = Irmin.View (Store)
+module I = Irmin_unix.Irmin_http.Make(Irmin.Contents.String)(Irmin.Ref.String)(Irmin.Hash.SHA1)
+
+let unwatch_table : (string, unit -> unit Lwt.t) Hashtbl.t = Hashtbl.create 100 (* max number of machines in the datacenter *)
 
 let add_backend_support_msg =
     "Install `libvirt`, `xen-api-client` (xapi) or `xenctrl` (libxl) with opam to add the corresponding backend."
@@ -152,7 +160,7 @@ let persistdb =
   Arg.(value & opt (some string) None & info [ "persistdb" ] ~docv:"path" ~doc)
 
 let log m =
-  Printf.fprintf stdout "%s\n%!" m
+  Printf.fprintf stdout "\027[32m%s\n%!\027[m" m
 
 let or_abort f =
   try f () with
@@ -213,6 +221,7 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
     | None -> (module Irmin_backend.Make(Irmin_unix.Irmin_git.Memory))
     | Some _ -> (module Irmin_backend.Make(Irmin_unix.Irmin_git.FS))
   in
+  let module DC = Datacenter.Make(Storage_backend) in
   let module Jitsu = Jitsu.Make(Vm_backend)(Storage_backend) in
   let rec maintenance_thread t timeout =
     Lwt_unix.sleep timeout >>= fun () ->
@@ -222,6 +231,7 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
   in
   Lwt.async_exception_hook := (fun exn -> log (Printf.sprintf "Exception in async thread: %s" (Printexc.to_string exn)));
   Lwt_main.run (
+    lwt datacenter = DC.create () in
     ((match forwarder with
         | "" -> Dns_resolver_unix.create () >>= fun r -> (* use resolv.conf *)
           Lwt.return (Some r)
@@ -243,8 +253,173 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
      match r with
      | `Error e -> raise (Failure (Printf.sprintf "Unable to connect to backend: %s" (Jitsu.string_of_error e)))
      | `Ok backend_t ->
-       or_abort (fun () -> Jitsu.create backend_t log forward_resolver ~synjitsu ~persistdb ()) >>= fun t ->
-       Lwt.pick [(
+       or_abort (fun () -> Jitsu.create backend_t log forward_resolver ~synjitsu ~persistdb datacenter ()) >>= fun t ->
+
+       let watch_remote_hosts ~storage ~host:_r_host diff =
+         let process_response () =
+           log "Response detected";
+           Storage_backend.get_response storage ~requestor:(List.hd Dc_params.hosts_names) >>= function
+           | Rpc.Enum response when response <> [] ->
+             (* read response params *)
+             return ()
+           | _ -> (* raise (Failure "Empty or non well-formed response") *)
+             return ()
+         in
+         match diff with
+         | `Added _  | `Updated _ -> process_response ()
+         | `Removed _ -> return ()
+       in
+       let process_tags repo _tag diff =
+         let process_command key value =
+           match (List.nth key 1) with
+           | "request" -> begin
+             let requestor  = List.nth key 0 in
+             match Dc_params.rpc_of_string value with
+             | Rpc.Enum action when action <> [] ->
+               let params = List.tl action in begin
+               match Rpc.string_of_rpc (List.hd action) with
+               | "add_vm" -> begin
+                 try
+                   Jitsu.add_replica t ~requestor ~params
+                 with _exn ->
+                  Printexc.print_backtrace stdout;
+                  return ()
+               end
+               | "dis_vm" -> Jitsu.dis_replica t ~requestor
+               | "del_vm" -> begin
+                 try
+                   Jitsu.del_replica t ~requestor
+                 with _exn ->
+                  Printexc.print_backtrace stdout;
+                  return ()
+               end
+               | "def_vm" ->
+                 let kernel  = Uri.of_string (Rpc.string_of_rpc (List.nth params 0)) in
+                 let mac = Macaddr.of_string_exn (Rpc.string_of_rpc (List.nth params 1)) in
+                 Vm_backend.define_vm backend_t ~name_label:requestor ~mAC:mac ~pV_kernel:kernel >>=
+                 fun _ -> return ()
+               | act ->
+                 return (log (Printf.sprintf "requested action (%s) is not valid" act))
+               end
+             | _ -> raise (Failure (Printf.sprintf "Empty or non well-formed request: %s\n" value))
+           end
+           | _ -> return (log (Printf.sprintf "key: %s added: %s" (String.concat "/" key) value))
+         in
+         let process_diff view_p h =
+           (* Store.Repo.create config >>= Store.master task >>= fun s -> *)
+           lwt s = Store.of_commit_id task h repo in
+           lwt view = View.of_path (s "of-path views") ["jitsu"; "request";] in
+           View.diff view_p view >>= fun views ->
+           let _ =
+           Lwt_list.iter_s (fun (k, v) ->
+             match v with
+             | `Added v -> process_command k v
+             | `Updated (_, v) -> process_command k v
+             | `Removed v -> return (log (Printf.sprintf "key: %s removed: %s" (String.concat " " k) v))
+             ) views
+           in
+             return ()
+          in
+          match diff with
+          | `Added h ->
+              lwt view_p = View.empty () in
+              process_diff view_p h
+          | `Updated (h1, h2) ->
+              lwt s = Store.of_commit_id task h1 repo in
+              lwt view_p = View.of_path (s "of-path views") ["jitsu"; "request";] in
+              process_diff view_p h2
+          | `Removed _ -> return (log "keys removed")
+       in
+       let storage = Jitsu.get_storage t in
+       let ir_conn = Storage_backend.get_irmin_conn storage in
+       Lwt_list.iter_s (fun h ->
+         let ir_conn = Storage_backend.get_irmin_conn (h.DC.irmin_store) in
+         let path = [ "jitsu" ; "request"; (List.hd Dc_params.hosts_names) ; "response"; ] in
+         I.update (ir_conn "Add response") path "[]" >>
+         I.watch_key (ir_conn "jitsu") path
+           (watch_remote_hosts ~storage:(h.DC.irmin_store) ~host:h) >>= fun watch ->
+             Hashtbl.add unwatch_table h.DC.name watch;
+             return ()
+         ) (DC.get_all_remote_hosts datacenter) >>
+         let repo = (I.repo (ir_conn "jitsu")) in
+         I.Repo.watch_branches repo (process_tags repo) >>= fun _ ->
+
+        let rec dc_monitoring_thread timeout =
+          Storage_backend.get_host_list (Jitsu.get_storage t) >>= fun keepalives ->
+          let local_host = DC.get_local_host (Jitsu.get_datacenter t) in
+          let datacenter = DC.get_all_remote_hosts (Jitsu.get_datacenter t) in
+          (** create a list of new alive hosts in the datacenter *)
+          lwt new_hosts =
+            let rec find x lst =
+              match lst with
+              | [] -> raise (Failure "keepalive doesn't exist on the list")
+              | h::t -> if h = x then 0 else 1 + find x t
+            in
+            let nhs =
+              List.filter (fun (n, tm) ->
+                log (Printf.sprintf "keepalives: %s, size of datacenter: %d\n" n (List.length datacenter));
+                match tm with
+                | None -> false
+                | Some t -> ( not (List.exists (fun h -> h.DC.name = n) datacenter) && List.exists (fun name -> name = n) Dc_params.hosts_names ) && (Unix.time () -. t) <= 10.0
+              ) keepalives in
+            Lwt_list.filter_map_s (fun (name, _) ->
+              let idx = find name Dc_params.hosts_names in
+              let ip = List.nth Dc_params.hosts_ips idx in
+              let irmin = List.nth Dc_params.hosts_irmins idx in
+              DC.create_host name ip irmin >>= function
+              | Some host ->
+                (* add irmin watch *)
+                let ir_conn = Storage_backend.get_irmin_conn host.DC.irmin_store in
+                let path = [ "jitsu" ; "request"; (List.hd Dc_params.hosts_names) ; "response"; ] in
+                I.watch_key (ir_conn "jitsu") path
+                 (watch_remote_hosts ~storage:(host.DC.irmin_store) ~host) >>= fun watch ->
+                Hashtbl.add unwatch_table host.DC.name watch;
+                return (Some host)
+              | None -> return None
+                ) nhs
+          in
+          log (Printf.sprintf "number of new hosts: %d!\n" (List.length new_hosts));
+          (** create a list of hosts that didn't announce they aliveness *)
+          let (dead_hosts, alive_hosts) =
+            List.partition (fun h ->
+              List.for_all (fun (n, _) -> h.DC.name <> n) keepalives ||
+              List.exists (fun (n, tm) -> if h.DC.name = n then
+                match tm with
+                | None -> true
+                | Some t -> (Unix.time () -. t) > 7.0
+                else
+                  false) keepalives
+              ) datacenter in
+          log (Printf.sprintf "number of dead hosts: %d!\n" (List.length dead_hosts));
+          lwt all_alives = (* all the datacenter machines their irmin is accessible *)
+            Lwt_list.filter_map_s (fun h ->
+              try_lwt
+                let ir_conn = Storage_backend.get_irmin_conn (h.DC.irmin_store) in
+                let path = [ "jitsu" ; "datacenter"; (List.hd Dc_params.hosts_names) ; ] in
+                I.update (ir_conn "Update keep-alive") path (string_of_float (Unix.time ())) >>
+                return (Some h)
+              with _ -> return None
+            ) (alive_hosts @ new_hosts)
+          in
+          log (Printf.sprintf "number of alives: %d!\n" (List.length all_alives));
+          (* unwatch dead hosts *)
+          lwt () =
+            Lwt_list.iter_s (fun h ->
+              let ir_conn = Storage_backend.get_irmin_conn h.DC.irmin_store in
+              let w = Hashtbl.find unwatch_table h.DC.name in
+              (* TODO: I.unwatch (ir_conn "jitsu") w >>= fun () -> *)
+              let _ = Hashtbl.remove unwatch_table h.DC.name in
+              return ()
+              ) dead_hosts
+          in
+          let () = Jitsu.update_datacenter t (local_host::all_alives) in
+          Lwt_unix.sleep timeout >>= fun () ->
+          dc_monitoring_thread timeout;
+        in
+
+      Jitsu.startup_check t >>= fun _ ->
+
+      Lwt.pick [(
            (* main thread, DNS server *)
            let add_with_config config_array = (
              let vm_config = (Hashtbl.create (Array.length config_array)) in
@@ -303,7 +478,15 @@ let jitsu backend connstr bindaddr bindport forwarder forwardport response_delay
            | e -> log (Printf.sprintf "Maintenance thread exited unexpectedly with exception: %s" (Printexc.to_string e)); Lwt.return_unit
              >>= fun () ->
              log "Maintenance thread no longer running. Exiting...";
-             Lwt.return_unit)]);
+             Lwt.return_unit);
+          (try_lwt
+             dc_monitoring_thread 5.0;
+           with
+           | e -> log (Printf.sprintf "DC monitoring thread exited unexpectedly with exception: %s" (Printexc.to_string e)); Lwt.return_unit
+             >>= fun () ->
+             log "DC monitoring thread no longer running. Exiting...";
+             Lwt.return_unit);
+            ]);
   )
 
 let jitsu_t =

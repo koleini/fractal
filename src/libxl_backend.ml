@@ -140,6 +140,15 @@ module Make = struct
 
   (* Helper functions *)
 
+  let define_vm _ ~name_label:_ ~mAC:_ ~pV_kernel:_ =
+    Lwt.return (`Error (`Unknown "TODO: define_vm is not implemented for libxl."))
+
+  let undefine_vm _t _uuid =
+    Lwt.return (`Error (`Unknown "TODO: define_vm is not implemented for libxl."))
+
+  let get_kernel _ _ =
+    Lwt.return (`Error (`Unknown "TODO: get_kernel is not implemented for libxl."))
+
   let lookup_vm_by_predicate t p =
     let context = !(t.context) in
     let domains = List.filter p (Xenlight.Dominfo.list context) in

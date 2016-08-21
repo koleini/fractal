@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2015 Magnus Skjegstad <magnus@skjegstad.com>
- * Copyright (c) 2015 Masoud Koleini <masoud.koleini@nottingham.ac.uk>
+ * Copyright (c) 2014-2016 Masoud Koleini <masoud.koleini@nottingham.ac.uk>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -48,19 +48,19 @@ module Make = struct
     | None -> raise (Invalid_config (Printf.sprintf "unable to parse UUID %s" uuid))
     | Some uuid -> uuid
 
-  let define_vm t ~name_label ~pV_kernel =
+  let define_vm t ~name_label ~mAC ~pV_kernel =
     try_xapi "Unable to define vm" (fun () ->
-        let (rpc, session_id) = t.connection in
+      let (rpc, session_id) = t.connection in
         lwt vm = VM.create ~rpc ~session_id
             ~name_label ~name_description:"" ~user_version:0L
             ~is_a_template:false
             ~affinity:"OpaqueRef:NULL"
             ~memory_target:0L
-            ~memory_static_max:268435456L ~memory_dynamic_max:268435456L
-            ~memory_dynamic_min:134217728L ~memory_static_min:134217728L
+            ~memory_static_max:536870912L ~memory_dynamic_max:536870912L
+            ~memory_dynamic_min:268435456L ~memory_static_min:268435456L
             ~vCPUs_params:[] ~vCPUs_max:1L ~vCPUs_at_startup:1L
             ~actions_after_shutdown:`destroy ~actions_after_reboot:`restart ~actions_after_crash:`restart
-            ~pV_bootloader:"" ~pV_kernel ~pV_ramdisk:"" ~pV_args:""
+            ~pV_bootloader:"" ~pV_kernel:(Uri.to_string pV_kernel) ~pV_ramdisk:"" ~pV_args:""
             ~pV_bootloader_args:"" ~pV_legacy_args:""
             ~hVM_boot_policy:"" ~hVM_boot_params:[] ~hVM_shadow_multiplier:1.0
             ~platform:[]
@@ -74,17 +74,18 @@ module Make = struct
             ~protection_policy:"OpaqueRef:NULL"
             ~is_snapshot_from_vmpp:false
             ~appliance:"OpaqueRef:NULL"
-            ~generation_id:"0.0"
-            ~hardware_platform_version:0L
-            ~start_delay:0L ~shutdown_delay:0L ~order:0L ~suspend_SR:"OpaqueRef:NULL" ~version:0L in
-        lwt net = Network.get_by_name_label ~rpc ~session_id ~label:"Pool-wide network associated with eth0" in
-        lwt vif = VIF.create ~rpc:rpc ~session_id:session_id
-            ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC:"" ~mTU:0L
-            ~other_config:[] ~qos_algorithm_type:"" ~qos_algorithm_params:[]  ~locking_mode:`network_default
-            ~ipv4_allowed:[] ~ipv6_allowed:[] in
-        return (vm, vif)
-      )
-
+            ~start_delay:0L ~shutdown_delay:0L ~order:0L ~suspend_SR:"OpaqueRef:NULL" ~version:0L
+            ~generation_id:""
+            ~hardware_platform_version:0L in
+        lwt net = Network.get_by_name_label ~rpc:rpc ~session_id:session_id
+              ~label:(* "experiment" *) "Pool-wide network associated with eth0" in (* TODO *)
+        lwt _vif = VIF.create ~rpc:rpc ~session_id:session_id
+          ~device:"0" ~network:(List.hd net) ~vM:vm ~mAC:(Macaddr.to_string mAC) ~mTU:0L
+          ~other_config:[] ~qos_algorithm_type:"" ~qos_algorithm_params:[]  ~locking_mode:`network_default
+          ~ipv4_allowed:[] ~ipv6_allowed:[] in
+        lwt uuid = VM.get_uuid ~rpc:rpc ~session_id:session_id ~self:vm in
+        Lwt.return (parse_uuid_exn uuid)
+    )
 
   let default_log s =
     Printf.printf "xapi_backend: %s\n" s
@@ -97,13 +98,21 @@ module Make = struct
         Printf.sprintf "Unable to connect to Xapi backend. Verify that the connect string is correct (%s) and that you have the right permissions." (Uri.to_string uri)
       in
       try_xapi error_msg (fun () ->
-          let host = match Uri.host uri with | Some h -> h | None -> "127.0.0.1" in
-          let user = match Uri.user uri with | Some u -> u | None -> "root" in
-          let pass = match Uri.host uri with | Some h -> h | None -> "" in
-          let rpc = if !json then make_json host else make host in
-          lwt session_id = Session.login_with_password ~rpc ~uname:user ~pwd:pass ~version:"1.0" ~originator:"jitsu" in
-          Lwt.return { connection = (rpc, session_id) ; log_f }
-        )
+        let schm = match Uri.scheme uri with | Some h -> h | None -> "http" in
+        let host = match Uri.host uri with | Some h -> h | None -> "127.0.0.1" in
+        let user = match Uri.user uri with | Some u -> u | None -> "root" in
+        let pass = match Uri.password uri with | Some h -> h | None -> "" in
+        let port = match Uri.port uri with | Some h -> string_of_int h | None -> "80" in
+        let rpc = if !json then make_json (schm ^ "://" ^ host ^ ":" ^ port) else make (schm ^ "://" ^ host ^ ":" ^ port) in
+        lwt session_id = Session.login_with_password ~rpc:rpc ~uname:user ~pwd:pass ~version:"1.0" ~originator:"jitsu" in
+        Lwt.return { connection = (rpc, session_id) ; log_f }
+      )
+
+  let disconnect t =
+    try_xapi "Unable to disconnect" (fun () ->
+      let (rpc, session_id) = t.connection in
+      Session.logout ~rpc:rpc ~session_id:session_id
+      )
 
   (* convert vm state to string *)
   let xapi_state_to_vm_state = function
@@ -111,6 +120,7 @@ module Make = struct
     | `Paused -> Vm_state.Paused
     | `Halted -> Vm_state.Off
     | `Suspended -> Vm_state.Suspended
+    | _ -> Vm_state.Unknown
 
   let lookup_vm_by_name t name =
     (* Xapi: multiple domain can share the same name TODO: *)
@@ -155,12 +165,23 @@ module Make = struct
         Lwt.return (xapi_state_to_vm_state state)
       )
 
+  let get_kernel t uuid =
+    try_xapi "Unable to get VM kernel" (fun () ->
+      let (rpc, session_id) = t.connection in
+      lwt domain = VM.get_by_uuid ~rpc:rpc ~session_id:session_id ~uuid:(Uuidm.to_string uuid) in
+      VM.get_PV_kernel ~rpc:rpc ~session_id:session_id ~self:domain >>= fun kernel ->
+      return (Uri.of_string kernel)
+    )
+
   let destroy_vm t uuid =
     try_xapi "Unable to destroy VM" (fun () ->
         let (rpc, session_id) = t.connection in
         lwt domain = VM.get_by_uuid ~rpc:rpc ~session_id:session_id ~uuid:(Uuidm.to_string uuid) in
         VM.destroy ~rpc:rpc ~session_id:session_id ~self:domain
       )
+
+  let undefine_vm t uuid =
+    destroy_vm t uuid
 
   let shutdown_vm t uuid =
     try_xapi "Unable to shutdown VM" (fun () ->

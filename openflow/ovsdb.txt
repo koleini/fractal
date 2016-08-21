@@ -1,0 +1,666 @@
+
+--------------------------------------------------------------------------------
+# Setting up monitoring when the switch first connects
+Sending JSON RPC: {
+    "method" : "monitor",
+    "params" : [
+        "Open_vSwitch",
+        0,
+        {
+            "Open_vSwitch" : {
+                "select" : {
+                    "initial" : true,
+                    "insert" : true,
+                    "delete" : true,
+                    "modify" : true
+                }
+            },
+            "Bridge" : {
+                "select" : {
+                    "initial" : true,
+                    "insert" : true,
+                    "delete" : true,
+                    "modify" : true
+                }
+            },
+            "Port" : {
+                "select" : {
+                    "initial" : true,
+                    "insert" : true,
+                    "delete" : true,
+                    "modify" : true
+                }
+            },
+            "Interface" : {
+                "select" : {
+                    "initial" : true,
+                    "insert" : true,
+                    "delete" : true,
+                    "modify" : true
+                }
+            }
+        }
+    ],
+    "id" : 0
+}
+--------------------------------------------------------------------------------
+# Receiving the initial table dump from the switch
+Received JSON message: {
+    "id" : 0,
+    "error" : null,
+    "result" : {
+        "Port" : {
+            "ec49523e-bbdc-45fe-96e8-4d5b2b7c6409" : {
+                "new" : {
+                    "trunks" : [
+                        "set",
+                        [
+                        ]
+                    ],
+                    "external_ids" : [
+                        "map",
+                        [
+                        ]
+                    ],
+                    "bond_fake_iface" : false,
+                    "_version" : [
+                        "uuid",
+                        "4a2dacc1-a136-4e76-ac73-4831e7401223"
+                    ],
+                    "other_config" : [
+                        "map",
+                        [
+                        ]
+                    ],
+                    "interfaces" : [
+                        "uuid",
+                        "c3d16717-1579-48f1-a0f8-f704323d2f8a"
+                    ],
+                    "name" : "eth1",
+                    "bond_updelay" : 0,
+                    "fake_bridge" : false,
+                    "tag" : [
+                        "set",
+                        [
+                        ]
+                    ],
+                    "bond_downdelay" : 0,
+                    "mac" : [
+                        "set",
+                        [
+                        ]
+                    ]
+                }
+            },
+            "6eec20fa-b862-4d42-8a69-58f3868b9000" : {
+                "new" : {
+                    "trunks" : [
+                        "set",
+                        [
+                        ]
+                    ],
+                    "external_ids" : [
+                        "map",
+                        [
+                        ]
+                    ],
+                    "bond_fake_iface" : false,
+                    "_version" : [
+                        "uuid",
+                        "527ecdb4-43d0-497f-bc71-9c5e88603d90"
+                    ],
+                    "other_config" :
+...
+--------------------------------------------------------------------------------
+# Creating a new bridge on the switch (along with controller-specific info
+# stored in the external_ids field)
+Sending JSON RPC: {
+    "method" : "transact",
+    "params" : [
+        "Open_vSwitch",
+        {
+            "op" : "insert",
+            "table" : "Bridge",
+            "row" : {
+                "external_ids" : [
+                    "map",
+                    [
+                        [
+                            "onix-uuid",
+                            "18d02a5e-6150-4ddf-9446-a8e7e87f7955"
+                        ],
+                        [
+                            "engine_test",
+                            "engine test crap"
+                        ]
+                    ]
+                ],
+                "name" : "test-engine"
+            },
+            "uuid-name" : "new_bridge"
+        },
+        {
+            "op" : "mutate",
+            "table" : "Open_vSwitch",
+            "where" : [
+            ],
+            "mutations" : [
+                [
+                    "bridges",
+                    "insert",
+                    [
+                        "set",
+                        [
+                            [
+                                "named-uuid",
+                                "new_bridge"
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        },
+        {
+            "op" : "comment",
+            "comment" : "OFConfigExportOVSDB::ForwardingEngineBind: Binding Onix engine 18d02a5e-6150-4ddf-9446-a8e7e87f7955 to chassis 692da11a-5273-421d-b44a-4a3e963ad46d"
+        }
+    ],
+    "id" : 1
+}
+--------------------------------------------------------------------------------
+# Creating a new GRE port on a bridge
+Sending JSON RPC: {
+    "method" : "transact",
+    "params" : [
+        "Open_vSwitch",
+        {
+            "op" : "insert",
+            "table" : "Interface",
+            "row" : {
+                "type" : "gre",
+                "options" : [
+                    "map",
+                    [
+                        [
+                            "remote_ip",
+                            "192.168.0.12"
+                        ],
+                        [
+                            "csum",
+                            "true"
+                        ],
+                        [
+                            "key",
+                            "1"
+                        ]
+                    ]
+                ],
+                "external_ids" : [
+                    "map",
+                    [
+                        [
+                            "onix-uuid",
+                            "3aa3ed1a-368a-4b98-99f8-3f8a700d2a75"
+                        ],
+                        [
+                            "port_test",
+                            "port test crap"
+                        ]
+                    ]
+                ],
+                "ingress_policing_rate" : 45,
+                "name" : "gre1"
+            },
+            "uuid-name" : "new_iface"
+        },
+        {
+            "op" : "insert",
+            "table" : "Port",
+            "row" : {
+                "name" : "gre1",
+                "interfaces" : [
+                    "set",
+                    [
+                        [
+                            "named-uuid",
+                            "new_iface"
+                        ]
+                    ]
+                ]
+            },
+            "uuid-name" : "new_port"
+        },
+        {
+            "op" : "mutate",
+            "table" : "Bridge",
+            "where" : [
+                [
+                    "_uuid",
+                    "==",
+                    [
+                        "uuid",
+                        "7d66ebfd-66af-4469-9511-9212de831b7f"
+...
+--------------------------------------------------------------------------------
+# Receiving an updating reflecting the changes I just made
+Received JSON message: {
+    "method" : "update",
+    "id" : null,
+    "params" : [
+        0,
+        {
+            "Open_vSwitch" : {
+                "2eff2f77-4ee3-459c-bbd9-2335cf6b4c1a" : {
+                    "old" : {
+                        "_version" : [
+                            "uuid",
+                            "1570f0e3-2901-4a0c-b01f-2355e1ed3640"
+                        ],
+                        "bridges" : [
+                            "set",
+                            [
+                                [
+                                    "uuid",
+                                    "7b3c0a7c-2798-492e-a62b-e4cc4dde2d93"
+                                ],
+                                [
+                                    "uuid",
+                                    "7d66ebfd-66af-4469-9511-9212de831b7f"
+                                ]
+                            ]
+                        ]
+                    },
+                    "new" : {
+                        "cur_cfg" : 0,
+                        "ssl" : [
+                            "uuid",
+                            "7c763363-f044-4915-b4ee-d4f153121d1a"
+                        ],
+                        "next_cfg" : 0,
+                        "bridges" : [
+                            "set",
+                            [
+                                [
+                                    "uuid",
+                                    "7b3c0a7c-2798-492e-a62b-e4cc4dde2d93"
+                                ],
+                                [
+                                    "uuid",
+                                    "7d66ebfd-66af-4469-9511-9212de831b7f"
+                                ],
+                                [
+                                    "uuid",
+                                    "9d5a1718-756c-4263-a36a-db81fa4cb280"
+                                ]
+                            ]
+                        ],
+                        "managers" : [
+                            "set",
+...
+--------------------------------------------------------------------------------
+# Creating a new port on the new bridge (along with controller-specific info
+# stored in the external_ids field) -- this affects many tables in the
+# same transaction, and they all need to be consistent
+Sending JSON RPC: {
+    "method" : "transact",
+    "params" : [
+        "Open_vSwitch",
+        {
+            "op" : "insert",
+            "table" : "Interface",
+            "row" : {
+                "external_ids" : [
+                    "map",
+                    [
+                        [
+                            "onix-uuid",
+                            "7ee5b1b4-2838-4998-91c4-91f63bd00ddc"
+                        ],
+                        [
+                            "port_test",
+                            "port test crap"
+                        ]
+                    ]
+                ],
+                "ingress_policing_rate" : 45,
+                "name" : "test-engine"
+            },
+            "uuid-name" : "new_iface"
+        },
+        {
+            "op" : "insert",
+            "table" : "Port",
+            "row" : {
+                "name" : "test-engine",
+                "interfaces" : [
+                    "set",
+                    [
+                        [
+                            "named-uuid",
+                            "new_iface"
+                        ]
+                    ]
+                ]
+            },
+            "uuid-name" : "new_port"
+        },
+        {
+            "op" : "mutate",
+            "table" : "Bridge",
+            "where" : [
+                [
+                    "_uuid",
+                    "==",
+                    [
+                        "uuid",
+                        "18d02a5e-6150-4ddf-9446-a8e7e87f7955"
+                    ]
+                ]
+            ],
+            "mutations" : [
+                [
+                    "ports",
+                    "insert",
+                    [
+                        "set",
+                        [
+                            [
+                                "named-uuid",
+                                "new_port"
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        },
+        {
+            "op" : "mutate",
+            "tabl
+...
+--------------------------------------------------------------------------------
+# Receiving an update stating that the switch assigned an Openflow port number
+# to my new GRE port.
+Received JSON message: {
+    "method" : "update",
+    "id" : null,
+    "params" : [
+        0,
+        {
+            "Interface" : {
+                "1e651cb5-aa86-4ede-9136-72aff6e3adc8" : {
+                    "old" : {
+                        "_version" : [
+                            "uuid",
+                            "059cdf31-5bfb-4c99-a1bf-eada6e5b8913"
+                        ],
+                        "ofport" : [
+                            "set",
+                            [
+                            ]
+                        ]
+                    },
+                    "new" : {
+                        "external_ids" : [
+                            "map",
+                            [
+                                [
+                                    "onix-uuid",
+                                    "3aa3ed1a-368a-4b98-99f8-3f8a700d2a75"
+                                ],
+                                [
+                                    "port_test",
+                                    "port test crap"
+                                ]
+                            ]
+                        ],
+                        "_version" : [
+                            "uuid",
+                            "02cb7656-381a-46af-a173-1084aa38d021"
+                        ],
+                        "options" : [
+                            "map",
+                            [
+                                [
+                                    "csum",
+                                    "true"
+                                ],
+                                [
+                                    "key",
+                                    "1"
+                                ],
+                                [
+                                    "remote_ip",
+                                    "192.168.0.12"
+                                ]
+                            ]
+                        ],
+                        "ingress_policing_rate" : 45,
+                        "ofport" : 1,
+...
+--------------------------------------------------------------------------------
+# Adding information to the external_ids map
+Sending JSON RPC: {
+    "method" : "transact",
+    "params" : [
+        "Open_vSwitch",
+        {
+            "op" : "mutate",
+            "table" : "Bridge",
+            "where" : [
+                [
+                    "_uuid",
+                    "==",
+                    [
+                        "uuid",
+                        "7d66ebfd-66af-4469-9511-9212de831b7f"
+                    ]
+                ]
+            ],
+            "mutations" : [
+                [
+                    "external_ids",
+                    "insert",
+                    [
+                        "map",
+                        [
+                            [
+                                "engine_test",
+                                "added engine attr"
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        },
+        {
+            "op" : "mutate",
+            "table" : "Bridge",
+            "where" : [
+                [
+                    "external_ids",
+                    "includes",
+                    [
+                        "map",
+                        [
+                            [
+                                "onix-uuid",
+                                "7d66ebfd-66af-4469-9511-9212de831b7f"
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            "mutations" : [
+                [
+                    "external_ids",
+                    "insert",
+                    [
+                        "map",
+                        [
+                            [
+                                "engine_test",
+                                "added engine attr"
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        },
+        {
+            "op" : "comment",
+            "comment" : "OFConfigExportOVSDB::ExportIfInteresting: Changing OVSDB extern ID engine_test"
+        }
+    ],
+    "id" : 5
+}
+--------------------------------------------------------------------------------
+# Atomically updating an entry in the external_ids map (deleting/inserting)
+Sending JSON RPC: {
+    "method" : "transact",
+    "params" : [
+        "Open_vSwitch",
+        {
+            "op" : "mutate",
+            "table" : "Bridge",
+            "where" : [
+                [
+                    "_uuid",
+                    "==",
+                    [
+                        "uuid",
+                        "7d66ebfd-66af-4469-9511-9212de831b7f"
+                    ]
+                ]
+            ],
+            "mutations" : [
+                [
+                    "external_ids",
+                    "delete",
+                    [
+                        "map",
+                        [
+                            [
+                                "engine_test",
+                                "added engine attr"
+                            ]
+                        ]
+                    ]
+                ],
+                [
+                    "external_ids",
+                    "insert",
+                    [
+                        "map",
+                        [
+                            [
+                                "engine_test",
+                                "changed engine attr"
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        },
+        {
+            "op" : "mutate",
+            "table" : "Bridge",
+            "where" : [
+                [
+                    "external_ids",
+                    "includes",
+                    [
+                        "map",
+                        [
+                            [
+                                "onix-uuid",
+                                "7d66ebfd-66af-4469-9511-9212de831b7f"
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            "mutations" : [
+                [
+                    "external_ids",
+                    "delete",
+                    [
+                        "map",
+                        [
+                            [
+--------------------------------------------------------------------------------
+# Removing a port from a bridge on the switch
+Sending JSON RPC: {
+    "method" : "transact",
+    "params" : [
+        "Open_vSwitch",
+        {
+            "op" : "mutate",
+            "table" : "Bridge",
+            "where" : [
+                [
+                    "_uuid",
+                    "==",
+                    [
+                        "uuid",
+                        "7d66ebfd-66af-4469-9511-9212de831b7f"
+                    ]
+                ]
+            ],
+            "mutations" : [
+                [
+                    "ports",
+                    "delete",
+                    [
+                        "set",
+                        [
+                            [
+                                "uuid",
+                                "0aced34f-f29f-422b-806b-184dbcd9766d"
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        },
+        {
+            "op" : "mutate",
+            "table" : "Bridge",
+            "where" : [
+                [
+                    "external_ids",
+                    "includes",
+                    [
+                        "map",
+                        [
+                            [
+                                "onix-uuid",
+                                "7d66ebfd-66af-4469-9511-9212de831b7f"
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            "mutations" : [
+                [
+                    "ports",
+                    "delete",
+                    [
+                        "set",
+                        [
+                            [
+                                "uuid",
+                                "0aced34f-f29f-422b-806b-184dbcd9766d"
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        },
+        {
+            "op" : "delete",
+            "table" : "Port",
+            "where" : [
+                [
+                    "_uuid",
+                    "==",
+                    [

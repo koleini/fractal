@@ -1,7 +1,7 @@
 .PHONY=all detect_backends test install clean
 
-INCLUDE=
-OPT=-linkpkg -g 
+INCLUDE=-I $(PWD)/openflow
+OPT=-linkpkg -g -thread
 OCAMLOPT=ocamlopt -w A-4-44
 
 PWD=$(shell pwd)
@@ -36,8 +36,8 @@ ifeq ($(HAS_XL), 1)
 	BACKEND_PKG := $(strip $(BACKEND_PKG),xenlight,xentoollog)
 endif
 
-BASE_FILES=vm_stop_mode.ml vm_state.ml xenstore.ml backends.mli vm_backends.ml options.ml rumprun.ml $(BACKEND_FILES) dns_helpers.ml irmin_backend.ml synjitsu.mli synjitsu.ml jitsu.mli jitsu.ml
-BASE_PKG=-package lwt.syntax,lwt,dns.lwt,cmdliner,ezxmlm,ipaddr,str,conduit,conduit.lwt-unix,irmin.unix,xenstore,xenstore_transport,xenstore_transport.lwt,uuidm$(BACKEND_PKG)
+BASE_FILES=ovs_backend.mli ovs_backend.ml dc_params.ml vm_stop_mode.ml vm_state.ml xenstore.ml backends.mli vm_backends.ml options.ml rumprun.ml $(BACKEND_FILES) dns_helpers.ml irmin_backend.ml datacenter.mli datacenter.ml synjitsu.mli synjitsu.ml jitsu.mli jitsu.ml
+BASE_PKG=-package lwt.syntax,lwt,sexplib.syntax,dns.lwt,cmdliner,ezxmlm,ipaddr,str,conduit,conduit.lwt-unix,rpclib,irmin.unix,xenstore,xenstore_transport,xenstore_transport.lwt,uuidm,xenlight,xentoollog,openflow,jsonm$(BACKEND_PKG)
 BASE_FILES_PREFIX=$(addprefix $(SRC)/,$(BASE_FILES))
 
 TEST_SRC=$(PWD)/lib_test
@@ -48,18 +48,24 @@ TEST_MAIN_FILE_PREFIX=$(addprefix $(TEST_SRC)/,$(TEST_MAIN_FILE))
 TEST_PKG=$(BASE_PKG),alcotest
 TEST_INCLUDE=-I $(SRC)
 
+OF_SRC=$(PWD)/openflow
+OF_FILES=of13controller.mli of13controller.ml dbController.mli dbController.ml naasLoad.mli naasLoad.ml
+OF_FILES_PREFIX=$(addprefix $(OF_SRC)/,$(OF_FILES))
+OF_OBJS=dbController.cmx of13controller.cmx naasLoad.cmx
+
 all: $(BIN)/jitsu
 
 $(VERSION_ML): VERSION
 	@echo 'let current="$(VERSION)"' > $(VERSION_ML)
 	@echo 'Version $(VERSION)'
 
-$(BIN)/jitsu: $(BASE_FILES_PREFIX) $(MAIN_FILE_PREFIX) $(VERSION_ML) 
+$(BIN)/jitsu: $(OF_FILES_PREFIX) $(BASE_FILES_PREFIX) $(MAIN_FILE_PREFIX) $(VERSION_ML)
 	@[ "$(BACKENDS)" == "" ] && \
 		echo "Warning: No VM backends found. Install xenctrl, xen-api-client or libvirt with opam to add a backend." || \
 		echo 'Detected backends: $(subst :, ,$(BACKENDS))'
 	mkdir -p $(BIN)
-	cd $(SRC) ; ocamlfind $(OCAMLOPT) $(INCLUDE) $(BASE_PKG) $(OPT) $(VERSION_ML) $(BASE_FILES) $(MAIN_FILE) -o $(BIN)/jitsu -syntax camlp4o
+	cd $(OF_SRC) ; $(MAKE)
+	cd $(SRC) ; ocamlfind $(OCAMLOPT) $(INCLUDE) $(BASE_PKG) $(OPT) $(VERSION_ML) $(OF_FILES_PREFIX) $(BASE_FILES) $(MAIN_FILE) -o $(BIN)/jitsu -syntax camlp4o
 
 $(BIN)/test: $(BIN)/jitsu $(TEST_FILES_PREFIX) $(TEST_MAIN_FILE_PREFIX)
 	cd $(TEST_SRC) ; ocamlfind $(OCAMLOPT) $(TEST_INCLUDE) $(TEST_PKG) $(OPT) $(BASE_FILES_PREFIX) $(TEST_FILES) $(TEST_MAIN_FILE) -o $(BIN)/test -syntax camlp4o
@@ -77,7 +83,9 @@ clean:
 	cd $(SRC) ; rm -f $(addsuffix .cmi,$(basename $(MAIN_FILE))) $(addsuffix .cmx,$(basename $(MAIN_FILE))) $(addsuffix .o,$(basename $(MAIN_FILE)))
 	cd $(SRC) ; rm -f jitsu *~ tags
 	cd $(SRC) ; rm -f $(addsuffix .cmi,$(basename $(VERSION_ML))) $(addsuffix .cmx,$(basename $(VERSION_ML))) $(addsuffix .o,$(basename $(VERSION_ML)))
-	cd $(BIN) ; rm -f jitsu test
+	cd $(BIN) ; rm -f jitsu jitsu.cmi jitsu.cmx jitsu.o test
 	cd $(TEST_SRC) ; rm -f $(addsuffix .cmi,$(basename $(TEST_FILES))) $(addsuffix .cmx,$(basename $(TEST_FILES))) $(addsuffix .o,$(basename $(TEST_FILES)))
 	cd $(TEST_SRC) ; rm -f $(addsuffix .cmi,$(basename $(TEST_MAIN_FILE))) $(addsuffix .cmx,$(basename $(TEST_MAIN_FILE))) $(addsuffix .o,$(basename $(TEST_MAIN_FILE)))
+	cd $(OF_SRC) ; rm -f $(addsuffix .cmi,$(basename $(OF_FILES))) $(addsuffix .cmx,$(basename $(OF_FILES))) $(addsuffix .o,$(basename $(OF_FILES)))
+	cd $(CLIENT_SRC) ; rm -f $(addsuffix .cmi,$(basename $(CLIENT_MAIN))) $(addsuffix .cmx,$(basename $(CLIENT_MAIN_FILE))) $(addsuffix .o,$(basename $(CLIENT_MAIN_FILE)))
 	rm -rf _tests

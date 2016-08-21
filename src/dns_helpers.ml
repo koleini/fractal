@@ -50,4 +50,3 @@ let fallback forwarder _class _type _name =
     >>= fun result ->
     Lwt.return (Some (Dns.Query.answer_of_response result))
   | None -> Lwt.return_none
-

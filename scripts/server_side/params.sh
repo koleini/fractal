@@ -1,0 +1,4 @@
+BRIDGE=xenbr2
+SMAC=1e:77:f0:b4:bf:23
+EXT_PORT=1
+SPORT=80
